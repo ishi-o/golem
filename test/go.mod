@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/cloudwego/eino v0.9.15
+	github.com/ishi-o/golem/cmd v0.0.0
 	github.com/ishi-o/golem/connector/feishu v0.0.0
 	github.com/ishi-o/golem/core v0.0.0
 	github.com/ishi-o/golem/internal v0.0.0

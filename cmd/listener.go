@@ -10,6 +10,7 @@ import (
 
 type terminalListener struct {
 	output io.Writer
+	done   chan<- struct{}
 }
 
 func (l terminalListener) OnStart(*agent.RunContext)          {}
@@ -17,8 +18,13 @@ func (l terminalListener) OnSubscribe()                       {}
 func (l terminalListener) OnModel(string)                     {}
 func (l terminalListener) OnUsage(string, *schema.TokenUsage) {}
 func (l terminalListener) OnError(err error)                  { _, _ = fmt.Fprintf(l.output, "error: %v\n", err) }
-func (l terminalListener) OnFinished(agent.Outcome)           { _, _ = fmt.Fprintln(l.output) }
-func (l terminalListener) ShouldContinue() bool               { return true }
+func (l terminalListener) OnFinished(agent.Outcome) {
+	_, _ = fmt.Fprintln(l.output)
+	if l.done != nil {
+		close(l.done)
+	}
+}
+func (l terminalListener) ShouldContinue() bool { return true }
 func (l terminalListener) OnContent(content string) {
 	_, _ = fmt.Fprintf(l.output, "\r%s", content)
 }

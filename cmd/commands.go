@@ -36,7 +36,8 @@ func newChatCommand(config Config) *cobra.Command {
 			if requestID == "" {
 				requestID = config.Session
 			}
-			listener := terminalListener{output: config.Output}
+			done := make(chan struct{})
+			listener := terminalListener{output: config.Output, done: done}
 			request := agent.NewRequest(agent.ChatScenario, message,
 				agent.WithRequestID(requestID),
 				agent.WithIdentity(config.UserID, config.Session, "cli"),
@@ -44,7 +45,11 @@ func newChatCommand(config Config) *cobra.Command {
 				agent.WithListener(listener),
 			)
 			request.Listeners = append(request.Listeners, listenerWithQuestions{input: config.Input, output: config.Output})
-			return config.Runner.Fire(request)
+			if err := config.Runner.Fire(request); err != nil {
+				return err
+			}
+			<-done
+			return nil
 		},
 	}
 	command.Flags().StringVar(&requestID, "request-id", "", "identifier used by cancel")
