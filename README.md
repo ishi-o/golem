@@ -142,14 +142,26 @@ make build test lint
 ```
 
 The HTTP application listens on `:8080` by default; set `GOLEM_HTTP_ADDR` to
-change it. The CLI builds an OpenAI-compatible model and a SQLite store from
-the environment, so it can chat without another executable:
+change it. The app and CLI build an OpenAI-compatible model and a SQLite store
+from the environment:
 
 ```sh
 export OPENAI_API_KEY=your-api-key
 export OPENAI_MODEL=your-model
 # export OPENAI_BASE_URL=https://your-compatible-endpoint/v1
+(cd app && go run ./cmd/golem)
 (cd cmd && go run ./golem chat "hello")
+```
+
+The app exposes streaming chat and cancellation endpoints:
+
+```sh
+curl -N -X POST http://localhost:8080/api/agent/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}'
+curl -X POST http://localhost:8080/api/agent/cancel \
+  -H 'Content-Type: application/json' \
+  -d '{"request_id":"your-request-id"}'
 ```
 
 SQLite uses `data/golem.db` by default, or the directory configured by
@@ -158,15 +170,16 @@ path.
 
 ## Configuration
 
-The command bootstrap reads the model and SQLite variables below. `core/config`
-reads the remaining `GOLEM_*` variables and applies sensible defaults:
+The app and command bootstrap read the model and SQLite variables below.
+`core/config` reads the remaining `GOLEM_*` variables and applies sensible
+defaults:
 
 | Variable                      | Purpose                                                |
 | ----------------------------- | ------------------------------------------------------ |
-| `OPENAI_API_KEY`              | API key for the CLI's OpenAI-compatible model          |
-| `OPENAI_MODEL`                | Model name used by the CLI                             |
+| `OPENAI_API_KEY`              | API key for the app and CLI model                      |
+| `OPENAI_MODEL`                | Model name used by the app and CLI                    |
 | `OPENAI_BASE_URL`             | Optional OpenAI-compatible API base URL               |
-| `GOLEM_SQLITE_PATH`           | Optional SQLite database path for the CLI              |
+| `GOLEM_SQLITE_PATH`           | Optional SQLite database path for the app and CLI      |
 | `GOLEM_LOCALE`                | Language used by agent-generated runtime messages      |
 | `GOLEM_STORAGE_LOCATION`      | Root directory for user workspaces; defaults to `data` |
 | `GOLEM_STORAGE_BASE_URL`      | Base URL for published files                           |

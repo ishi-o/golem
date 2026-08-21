@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/ishi-o/golem/cmd"
-	"github.com/ishi-o/golem/cmd/internal/bootstrap"
 	"github.com/ishi-o/golem/core/config"
+	"github.com/ishi-o/golem/internal/bootstrap"
 )
 
 func main() {

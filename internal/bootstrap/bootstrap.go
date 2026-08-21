@@ -1,6 +1,7 @@
-// Package bootstrap builds the default command runtime from environment
-// variables. It belongs to the cmd module so the core module stays free of
-// model-provider and database-driver dependencies.
+// Package bootstrap builds the default runtime for the repository's
+// applications from environment variables. It is internal so applications in
+// this repository can share setup without making provider and driver
+// dependencies part of the public core module.
 package bootstrap
 
 import (
@@ -29,15 +30,15 @@ const (
 	sqliteEnv  = "GOLEM_SQLITE_PATH"
 )
 
-// Runtime owns the resources created for the command process.
+// Runtime owns the resources created for an application process.
 type Runtime struct {
 	Agent *agent.Agent
 	db    *sqlx.DB
 }
 
-// New creates the default CLI runtime. The model uses the OpenAI-compatible
+// New creates the default runtime. The model uses the OpenAI-compatible
 // chat-completions protocol; OPENAI_BASE_URL may point at another compatible
-// service. SQLite is the command's deliberately boring default store.
+// service. SQLite is the deliberately boring default store for local apps.
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -98,7 +99,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	return runtime, nil
 }
 
-// Close stops active runs and closes the command-owned database.
+// Close stops active runs and closes the application-owned database.
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil {
 		return nil

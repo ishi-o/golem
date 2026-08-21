@@ -42,3 +42,5 @@ replace github.com/ishi-o/golem/store/redis v0.0.0 => ./store/redis
 replace github.com/ishi-o/golem/sandbox/docker v0.0.0 => ./sandbox/docker
 
 replace github.com/ishi-o/golem/sandbox/kubernetes v0.0.0 => ./sandbox/kubernetes
+
+replace github.com/ishi-o/golem/app v0.0.0 => ./app

@@ -21,6 +21,7 @@ import (
 // enabling a connector it did not configure.
 type RouterConfig struct {
 	Logger        *slog.Logger
+	Agent         AgentRunner
 	ShareHandler  http.Handler
 	FeishuHandler http.Handler
 	Ready         func(context.Context) error
@@ -55,6 +56,11 @@ func NewRouter(config RouterConfig) chi.Router {
 	}
 	if config.FeishuHandler != nil {
 		router.Post("/webhooks/feishu", config.FeishuHandler.ServeHTTP)
+	}
+	if config.Agent != nil {
+		router.Route("/api/agent", func(r chi.Router) {
+			registerAgentRoutes(r, config.Agent, config.Logger)
+		})
 	}
 	return router
 }

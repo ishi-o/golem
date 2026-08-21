@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/ishi-o/golem/app"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/storage"
+	"github.com/ishi-o/golem/internal/bootstrap"
 )
 
 func main() {
@@ -25,7 +28,29 @@ func main() {
 		logger.Error("initialize storage", "err", err)
 		os.Exit(1)
 	}
-	router := app.NewRouter(app.RouterConfig{Logger: logger, Ready: func(context.Context) error { return nil }})
+	runtime, err := bootstrap.New(context.Background(), cfg, logger)
+	if err != nil {
+		logger.Error("bootstrap application runtime", "err", err, "config", cfg.String())
+		os.Exit(1)
+	}
+	defer func() {
+		closeContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := runtime.Close(closeContext); err != nil {
+			logger.Error("close application runtime", "err", err)
+		}
+	}()
+
+	router := app.NewRouter(app.RouterConfig{
+		Logger: logger,
+		Agent:  runtime.Agent,
+		Ready: func(context.Context) error {
+			if !runtime.Agent.Accepting() {
+				return errors.New("agent is shutting down")
+			}
+			return nil
+		},
+	})
 	server := app.NewServer(envOr("GOLEM_HTTP_ADDR", ":8080"), router)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
