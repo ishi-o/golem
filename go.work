@@ -1,0 +1,22 @@
+// One module per spring-agent Gradle module, and for the same reason: a
+// consumer adds golem/core and one persistence module, and inherits no driver
+// belonging to the others. In Java that isolation was compileOnly plus a build
+// task (checkRuntimeClasspathIsolation) policing the runtime classpath; Go has
+// no compileOnly and links statically, so the only honest equivalent is a
+// module boundary. If a driver were required here, every consumer of any
+// golem module would download it, and a backend's types would leak into core.
+//
+// go.work exists for development inside this repository only. It is ignored
+// when another module requires a published golem module, so local paths here
+// never reach consumers.
+go 1.26
+
+use (
+	./app
+	./cli
+	./core
+	./integration/feishu
+	./persistence/mongodb
+	./persistence/redis
+	./persistence/sqlx
+)

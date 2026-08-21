@@ -1,0 +1,8 @@
+# Local runs keep their databases, embeddings index and logs out of git, the
+# same set spring-agent's .gitignore keeps out (its data/ and .env).
+/data/
+/.env
+/dist/
+*.db
+*.db-wal
+*.db-shm
