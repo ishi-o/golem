@@ -1,9 +1,6 @@
-// Package config is the runtime configuration: plain structs, populated by
-// the embedder (from environment variables, a file, or code) with defaults
-// supplied here. No binder framework — spring-agent bound these through
-// @ConfigurationProperties, and the Go port's equivalent of that machinery is
-// the Load function's explicit os.Getenv calls, which stay greppable and
-// dependency-free.
+// Package config contains the runtime configuration. Embedders may populate
+// the plain structs from environment variables, a file, or application code;
+// Load provides the environment-backed default.
 package config
 
 import (
@@ -26,10 +23,9 @@ import (
 const DefaultGuideThreshold = 30000
 
 // Config is the whole runtime configuration. Zero values are normalized by
-// Normalize, which every embedder must call before handing the config to the
-// runtime; the one field spring-agent's normalizer forgot to default cost
-// every application that did not configure it a nil pointer from the
-// interceptor — not at startup, but on the first tool call of the first turn.
+// Normalize, which every application must call before handing the config to the
+// runtime. Normalize fills defaults and validates values before the runtime
+// starts.
 type Config struct {
 	// Locale names the language the agent writes its own words in (bundle
 	// selection), as a BCP 47 tag: "en", "zh-CN". Empty means the process
@@ -85,7 +81,7 @@ type ModelPricing struct {
 type Tools struct {
 	AskUserQuestion AskUserQuestion
 	PublishFile     PublishFile
-	Mcp             Mcp
+	MCP             MCP
 	ToolSearch      ToolSearch
 }
 
@@ -104,8 +100,8 @@ type PublishFile struct {
 	BaseURL string
 }
 
-// Mcp configures the MCP client factory.
-type Mcp struct {
+// MCP configures the MCP client factory.
+type MCP struct {
 	// TrustedHosts is the SSRF-guard allowlist: hosts allowed to serve MCP
 	// over plain http, and to resolve to addresses the guard would otherwise
 	// reject (a local monitoring stack, say).
@@ -149,8 +145,8 @@ func (c *Config) Normalize() error {
 	return nil
 }
 
-// Load builds a Config from environment variables — the same variables
-// spring-agent reads, so a deployment's env carries over — and normalizes it.
+// Load builds a Config from the GOLEM_* environment variables and normalizes
+// it.
 // Variables nobody set are simply absent; the two lists below are the whole
 // surface, documented once each:
 //
@@ -181,7 +177,7 @@ func Load() (Config, error) {
 					TTL:     envDuration("GOLEM_ASK_USER_TTL"),
 				},
 				PublishFile: PublishFile{BaseURL: os.Getenv("GOLEM_PUBLISH_BASE_URL")},
-				Mcp:         Mcp{TrustedHosts: splitList(os.Getenv("GOLEM_MCP_TRUSTED_HOSTS"))},
+				MCP:         MCP{TrustedHosts: splitList(os.Getenv("GOLEM_MCP_TRUSTED_HOSTS"))},
 				ToolSearch: ToolSearch{
 					MaxResults:      envInt("GOLEM_TOOL_SEARCH_RESULTS"),
 					EnableThreshold: envInt("GOLEM_TOOL_SEARCH_THRESHOLD"),

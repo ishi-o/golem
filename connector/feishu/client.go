@@ -1,4 +1,4 @@
-// Package feishu contains the Feishu/Lark connector.
+// Package feishu contains the optional Feishu/Lark connector.
 package feishu
 
 import (
@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -35,9 +34,6 @@ type ClientConfig struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Logger     *slog.Logger
-	// TokenRefreshSkew is retained for source compatibility. Token expiry and
-	// refresh are managed by the official SDK.
-	TokenRefreshSkew time.Duration
 }
 
 // Client wraps the official Feishu SDK with the small messaging surface used

@@ -1,8 +1,7 @@
 // One module per deployable or replaceable part keeps the public core free of
-// database and HTTP drivers. A consumer adds golem/core and one
-// store module, and inherits no driver belonging to the others.
-// Go has no compileOnly and links statically, so the module boundary is the
-// honest equivalent of spring-agent's runtime-classpath isolation check.
+// database and HTTP drivers. A consumer adds golem/core and one store
+// module, and inherits no driver belonging to the others. The module boundary
+// keeps optional integrations out of binaries that do not use them.
 //
 // go.work exists for development inside this repository only. It is ignored
 // when another module requires a published golem module, so local paths here
@@ -23,9 +22,9 @@ use (
 	./test
 )
 
-// The individual go.mod files keep real published module requirements. These
-// local replaces make the workspace test those modules against the checkout
-// without teaching downstream consumers to use repository-relative paths.
+// The individual go.mod files keep published module requirements. These local
+// replaces make the workspace test those modules against the checkout without
+// teaching downstream consumers to use repository-relative paths.
 replace github.com/ishi-o/golem/core v0.0.0 => ./core
 
 replace github.com/ishi-o/golem/connector/feishu v0.0.0 => ./connector/feishu

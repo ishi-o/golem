@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/ishi-o/golem/core/agent"
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 	larkcallback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -27,22 +27,55 @@ import (
 // replies continue asynchronously, which prevents Feishu's delivery retry
 // from starting duplicate runs.
 type Handler struct {
-	Agent             *agent.Agent
-	Backend           dao.Backend
-	Client            *Client
-	VerificationToken string
-	QuestionTTL       time.Duration
-	Logger            *slog.Logger
-	Now               func() time.Time
+	agent             *agent.Agent
+	backend           store.Backend
+	client            *Client
+	verificationToken string
+	questionTTL       time.Duration
+	logger            *slog.Logger
+	clock             func() time.Time
 	actionMu          sync.Mutex
 }
 
-// NewHandler wires a Feishu webhook handler.
-func NewHandler(runtime *agent.Agent, backend dao.Backend, client *Client, logger *slog.Logger) *Handler {
+// HandlerOption configures a webhook handler during construction.
+type HandlerOption func(*Handler)
+
+// WithVerificationToken enables Feishu URL-verification and event-token
+// checking.
+func WithVerificationToken(token string) HandlerOption {
+	return func(h *Handler) { h.verificationToken = token }
+}
+
+// WithQuestionTTL sets how long an interactive question remains answerable.
+func WithQuestionTTL(ttl time.Duration) HandlerOption {
+	return func(h *Handler) {
+		if ttl > 0 {
+			h.questionTTL = ttl
+		}
+	}
+}
+
+// WithClock supplies the clock used for question expiry.
+func WithClock(now func() time.Time) HandlerOption {
+	return func(h *Handler) {
+		if now != nil {
+			h.clock = now
+		}
+	}
+}
+
+// NewHandler constructs a Feishu webhook handler.
+func NewHandler(runtime *agent.Agent, backend store.Backend, client *Client, logger *slog.Logger, options ...HandlerOption) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{Agent: runtime, Backend: backend, Client: client, QuestionTTL: 24 * time.Hour, Logger: logger, Now: time.Now}
+	h := &Handler{agent: runtime, backend: backend, client: client, questionTTL: 24 * time.Hour, logger: logger, clock: time.Now}
+	for _, option := range options {
+		if option != nil {
+			option(h)
+		}
+	}
+	return h
 }
 
 // MessageEvent is the normalized subset of a Feishu message callback used by
@@ -112,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		eventType = envelope.Header.EventType
 		token = firstNonEmpty(token, envelope.Header.Token)
 	}
-	if h.VerificationToken != "" && token != h.VerificationToken {
+	if h.verificationToken != "" && token != h.verificationToken {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -137,7 +170,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.handleAction(r.Context(), actionValue, actorID); err != nil {
-			h.Logger.Error("Feishu card action failed", "err", err)
+			h.logger.Error("Feishu card action failed", "err", err)
 			http.Error(w, "action failed", http.StatusBadRequest)
 			return
 		}
@@ -153,10 +186,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ignored": true})
 		return
 	}
-	if h.Backend != nil {
-		claimed, claimErr := h.Backend.ProcessedMessages().Claim(r.Context(), event.MessageID)
+	if h.backend != nil {
+		claimed, claimErr := h.backend.ProcessedMessages().Claim(r.Context(), event.MessageID)
 		if claimErr != nil {
-			h.Logger.Error("Feishu duplicate guard failed", "messageId", event.MessageID, "err", claimErr)
+			h.logger.Error("Feishu duplicate guard failed", "messageId", event.MessageID, "err", claimErr)
 			http.Error(w, "temporary failure", http.StatusInternalServerError)
 			return
 		}
@@ -165,9 +198,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if h.Agent == nil {
-		if h.Backend != nil {
-			_ = h.Backend.ProcessedMessages().Release(r.Context(), event.MessageID)
+	if h.agent == nil {
+		if h.backend != nil {
+			_ = h.backend.ProcessedMessages().Release(r.Context(), event.MessageID)
 		}
 		http.Error(w, "agent is not configured", http.StatusServiceUnavailable)
 		return
@@ -184,11 +217,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		agent.WithConversation(conversationID, rootID, event.MessageID),
 		agent.WithListener(listener),
 	)
-	if err := h.Agent.Fire(request); err != nil {
-		if h.Backend != nil {
-			_ = h.Backend.ProcessedMessages().Release(r.Context(), event.MessageID)
+	if err := h.agent.Fire(request); err != nil {
+		if h.backend != nil {
+			_ = h.backend.ProcessedMessages().Release(r.Context(), event.MessageID)
 		}
-		h.Logger.Error("Feishu agent request rejected", "messageId", event.MessageID, "err", err)
+		h.logger.Error("Feishu agent request rejected", "messageId", event.MessageID, "err", err)
 		http.Error(w, "agent unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -199,20 +232,20 @@ func (h *Handler) responseListener(event MessageEvent, releaseClaim bool) agent.
 	var content string
 	var runErr error
 	return agent.ListenerFuncs{
-		OnStartF: func(registry *agent.RunRegistry) {
-			if h.Client != nil && h.Backend != nil {
-				registry.AddQuestionHandler(&questionHandler{handler: h, event: event})
+		OnStartFunc: func(run *agent.RunContext) {
+			if h.client != nil && h.backend != nil {
+				run.AddQuestionHandler(&questionHandler{handler: h, event: event})
 			}
 		},
-		OnContentF: func(value string) { content = value },
-		OnErrorF:   func(err error) { runErr = err },
-		OnFinishedF: func(outcome agent.Outcome) {
-			if releaseClaim && outcome != agent.OutcomeCompleted && h.Backend != nil && event.MessageID != "" {
-				if err := h.Backend.ProcessedMessages().Release(context.Background(), event.MessageID); err != nil {
-					h.Logger.Error("Feishu duplicate claim release failed", "messageId", event.MessageID, "err", err)
+		OnContentFunc: func(value string) { content = value },
+		OnErrorFunc:   func(err error) { runErr = err },
+		OnFinishedFunc: func(outcome agent.Outcome) {
+			if releaseClaim && outcome != agent.OutcomeCompleted && h.backend != nil && event.MessageID != "" {
+				if err := h.backend.ProcessedMessages().Release(context.Background(), event.MessageID); err != nil {
+					h.logger.Error("Feishu duplicate claim release failed", "messageId", event.MessageID, "err", err)
 				}
 			}
-			if h.Client == nil || event.ChatID == "" {
+			if h.client == nil || event.ChatID == "" {
 				return
 			}
 			if outcome == agent.OutcomeCancelled {
@@ -224,8 +257,8 @@ func (h *Handler) responseListener(event MessageEvent, releaseClaim bool) agent.
 			if strings.TrimSpace(content) == "" {
 				return
 			}
-			if _, err := h.Client.ReplyText(context.Background(), event.MessageID, content); err != nil {
-				h.Logger.Error("Feishu reply failed", "messageId", event.MessageID, "err", err)
+			if _, err := h.client.ReplyText(context.Background(), event.MessageID, content); err != nil {
+				h.logger.Error("Feishu reply failed", "messageId", event.MessageID, "err", err)
 			}
 		},
 	}
@@ -237,12 +270,12 @@ type questionHandler struct {
 }
 
 func (q *questionHandler) Ask(ctx context.Context, questions []tools.Question) (map[string]string, error) {
-	if q.handler.Client == nil || q.handler.Backend == nil {
+	if q.handler.client == nil || q.handler.backend == nil {
 		return nil, &tools.ErrNotAnswered{Message: "Questions could not be shown in Feishu."}
 	}
 	pendingID := randomID()
 	card := questionCard(pendingID, questions)
-	cardMessageID, err := q.handler.Client.SendCard(ctx, ReceiveIDChatID, q.event.ChatID, card)
+	cardMessageID, err := q.handler.client.SendCard(ctx, ReceiveIDChatID, q.event.ChatID, card)
 	if err != nil {
 		return nil, err
 	}
@@ -250,20 +283,20 @@ func (q *questionHandler) Ask(ctx context.Context, questions []tools.Question) (
 	if err != nil {
 		return nil, err
 	}
-	ttl := q.handler.QuestionTTL
+	ttl := q.handler.questionTTL
 	if ttl <= 0 || ttl > 14*24*time.Hour {
 		ttl = 14 * 24 * time.Hour
 	}
 	now := q.handler.now()
-	question := dao.PendingQuestion{ID: pendingID, UserID: q.event.UserID, ChatID: q.event.ChatID, ChatType: q.event.ChatType, ConversationID: firstNonEmpty(q.event.RootMessageID, q.event.ChatID, q.event.MessageID), RootMessageID: firstNonEmpty(q.event.RootMessageID, q.event.MessageID), CardID: cardMessageID, QuestionsJSON: string(questionsJSON), Status: dao.PendingQuestionStatusPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	if err := q.handler.Backend.PendingQuestions().Save(ctx, question); err != nil {
+	question := store.PendingQuestion{ID: pendingID, UserID: q.event.UserID, ChatID: q.event.ChatID, ChatType: q.event.ChatType, ConversationID: firstNonEmpty(q.event.RootMessageID, q.event.ChatID, q.event.MessageID), RootMessageID: firstNonEmpty(q.event.RootMessageID, q.event.MessageID), CardID: cardMessageID, QuestionsJSON: string(questionsJSON), Status: store.PendingQuestionStatusPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+	if err := q.handler.backend.PendingQuestions().Save(ctx, question); err != nil {
 		return nil, err
 	}
 	return map[string]string{}, nil
 }
 
 func (h *Handler) handleAction(ctx context.Context, value map[string]any, actorID string) error {
-	if h.Backend == nil {
+	if h.backend == nil {
 		return errors.New("feishu: persistence is not configured")
 	}
 	// Feishu can retry a card action while the first callback is still
@@ -277,35 +310,35 @@ func (h *Handler) handleAction(ctx context.Context, value map[string]any, actorI
 	if pendingID == "" || answer == "" {
 		return errors.New("feishu: card action has no pending_id or answer")
 	}
-	pending, err := h.Backend.PendingQuestions().FindByID(ctx, pendingID)
+	pending, err := h.backend.PendingQuestions().Get(ctx, pendingID)
 	if err != nil {
 		return err
 	}
-	if pending == nil || pending.Status != dao.PendingQuestionStatusPending {
+	if pending == nil || pending.Status != store.PendingQuestionStatusPending {
 		return errors.New("feishu: pending question is no longer answerable")
 	}
 	if actorID != "" && pending.UserID != "" && actorID != pending.UserID {
 		return errors.New("feishu: card action is from a different user")
 	}
 	if !pending.ExpiresAt.IsZero() && !pending.ExpiresAt.After(h.now()) {
-		return h.Backend.PendingQuestions().UpdateStatus(ctx, pending.ID, dao.PendingQuestionStatusExpired)
+		return h.backend.PendingQuestions().SetStatus(ctx, pending.ID, store.PendingQuestionStatusExpired)
 	}
-	if err := h.Backend.PendingQuestions().UpdateStatus(ctx, pending.ID, dao.PendingQuestionStatusAnswered); err != nil {
+	if err := h.backend.PendingQuestions().SetStatus(ctx, pending.ID, store.PendingQuestionStatusAnswered); err != nil {
 		return err
 	}
-	if h.Agent == nil {
-		_ = h.Backend.PendingQuestions().UpdateStatus(ctx, pending.ID, dao.PendingQuestionStatusPending)
+	if h.agent == nil {
+		_ = h.backend.PendingQuestions().SetStatus(ctx, pending.ID, store.PendingQuestionStatusPending)
 		return errors.New("feishu: agent is not configured")
 	}
 	text := fmt.Sprintf("The user answered the question %q with: %s", question, answer)
-	err = h.Agent.Fire(agent.NewRequest(agent.ChatScenario, text,
+	err = h.agent.Fire(agent.NewRequest(agent.ChatScenario, text,
 		agent.WithRequestID(pending.ID+":answer"),
 		agent.WithIdentity(pending.UserID, pending.ChatID, pending.ChatType),
 		agent.WithConversation(pending.ConversationID, pending.RootMessageID, pending.CardID),
 		agent.WithListener(h.responseListener(MessageEvent{MessageID: pending.CardID, UserID: pending.UserID, ChatID: pending.ChatID, ChatType: pending.ChatType, RootMessageID: pending.RootMessageID}, false)),
 	))
 	if err != nil {
-		_ = h.Backend.PendingQuestions().UpdateStatus(ctx, pending.ID, dao.PendingQuestionStatusPending)
+		_ = h.backend.PendingQuestions().SetStatus(ctx, pending.ID, store.PendingQuestionStatusPending)
 	}
 	return err
 }
@@ -326,8 +359,8 @@ func questionCard(pendingID string, questions []tools.Question) map[string]any {
 }
 
 func (h *Handler) now() time.Time {
-	if h.Now != nil {
-		return h.Now()
+	if h.clock != nil {
+		return h.clock()
 	}
 	return time.Now()
 }

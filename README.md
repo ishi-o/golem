@@ -17,13 +17,13 @@ or a CLI built with [cobra](https://github.com/spf13/cobra), with structured
 logs from the standard library's [log/slog](https://github.com/golang/go/tree/master/src/log/slog).
 
 The [feishu](https://open.feishu.cn/) / lark connector is optional. When it is
-wired into an application, it handles message events, interactive cards,
+configured in an application, it handles message events, interactive cards,
 replies, and duplicate-message protection.
 
 ## Built-in tools
 
 The runtime supports these built-in tools; applications can enable or register
-them according to their wiring and configuration:
+them according to application configuration:
 
 - Time: `CurrentDateTime`
 - Files: `ReadFile`, `WriteFile`, `ListFiles`, `GrepFiles`
@@ -40,9 +40,9 @@ them according to their wiring and configuration:
 
 ## Use as an upstream library
 
-golem can be used as an upstream library. Import `core` and at least one store
-implementation; `core` exposes the agent and persistence interfaces, while the
-selected store supplies persistence and conversation memory.
+golem can be used as an upstream library. Import `core` and at least one
+store implementation; `core` exposes the agent and store interfaces, while
+the selected implementation supplies persistence and conversation memory.
 
 ```sh
 go get github.com/ishi-o/golem/core
@@ -56,13 +56,13 @@ accumulated content and the final outcome:
 
 ```go
 listener := agent.ListenerFuncs{
-	OnContentF: func(content string) {
+	OnContentFunc: func(content string) {
 		fmt.Print("\r", content)
 	},
-	OnErrorF: func(err error) {
+	OnErrorFunc: func(err error) {
 		log.Printf("agent failed: %v", err)
 	},
-	OnFinishedF: func(outcome agent.Outcome) {
+	OnFinishedFunc: func(outcome agent.Outcome) {
 		log.Printf("agent finished: %s", outcome)
 	},
 }
@@ -80,12 +80,12 @@ if err := runtime.Fire(request); err != nil {
 }
 ```
 
-Set the same listener in `runtime.DeclaredListeners` when it should observe
-every run, including scheduled runs.
+Pass `agent.WithDefaultListener(listener)` to `agent.New` when it should
+observe every run, including scheduled runs.
 
 ## Adding a tool
 
-Register a downstream tool during wiring. The request identity is available
+Register a downstream tool during application setup. The request identity is available
 through the typed tool context:
 
 ```go
@@ -110,7 +110,7 @@ provider.Register(profileTool(), nil)
 
 ## Adding an mcp server
 
-The provider accepts an `MCPBuilder`, so a downstream integration can choose
+The provider accepts an `MCPBuilder`, so a downstream connector can choose
 its own mcp client and return the tools it connected for the current user:
 
 ```go
@@ -142,8 +142,9 @@ make build test lint
 ```
 
 The HTTP application listens on `:8080` by default; set `GOLEM_HTTP_ADDR` to
-change it. Applications construct a model and one of the store implementations,
-then inject the resulting agent and handlers into the app or CLI surface.
+change it. Applications construct a model and one of the store
+implementations, then inject the resulting agent and handlers into the app or
+CLI surface.
 
 ## Configuration
 

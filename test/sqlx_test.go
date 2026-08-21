@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/ishi-o/golem/core/chatmemory"
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	sqlxstore "github.com/ishi-o/golem/store/sqlx"
-	"github.com/ishi-o/golem/test/daocontract"
+	"github.com/ishi-o/golem/test/storecontract"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -36,7 +36,7 @@ func newSQLXFixture(t *testing.T) *sqlxFixture {
 	return &sqlxFixture{db: database, store: store}
 }
 
-func (f *sqlxFixture) Backend() dao.Backend          { return f.store }
+func (f *sqlxFixture) Backend() store.Backend        { return f.store }
 func (f *sqlxFixture) Memory() chatmemory.Repository { return f.store }
 func (f *sqlxFixture) Owner() string {
 	return fmt.Sprintf("sqlite-owner-%d", f.owner.Add(1))
@@ -48,5 +48,5 @@ func TestSQLXPersistenceContract(t *testing.T) {
 	defer func() {
 		assert.NoError(t, fixture.Close())
 	}()
-	daocontract.Run(t, fixture)
+	storecontract.Run(t, fixture)
 }

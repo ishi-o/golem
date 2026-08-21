@@ -1,14 +1,9 @@
-// Package prompt renders the {placeholder} templates the runtime's prompts
-// use. spring-agent used Spring AI's SystemPromptTemplate, whose one behavior
-// worth porting is strictness: a template naming a variable the caller did
-// not supply is an error, not a silently empty substitution — a prompt that
-// quietly renders "Sender user ID: " is worse than a failed render, because
-// nothing downstream notices.
+// Package prompt renders the {placeholder} templates used by runtime prompts.
+// Missing variables are errors rather than silently empty substitutions,
+// because losing an identity or safety value is a correctness bug.
 //
-// text/template would do the job, but its {{.var}} syntax would break every
-// prompt written for spring-agent's {var} syntax, including the two defaults
-// this repository ships; a thirty-line strict renderer is cheaper than that
-// break.
+// The renderer keeps the compact {name} syntax used by the built-in prompts
+// and avoids introducing a template dependency for this small feature.
 package prompt
 
 import (

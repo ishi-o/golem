@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/i18n"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
 )
 
@@ -34,10 +34,10 @@ func (g guardedHandler) Ask(ctx context.Context, questions []tools.Question) (ma
 	// The guard reads the pending-question store; a repo failure is logged
 	// and the ask proceeds, because asking twice is a smaller failure than
 	// not asking at all.
-	if g.a.Repos != nil && g.req.ConversationID != "" {
-		pending, err := g.a.Repos.PendingQuestions().FindByConversationIDAndStatus(ctx, g.req.ConversationID, dao.PendingQuestionStatusPending)
+	if g.a.backend != nil && g.req.ConversationID != "" {
+		pending, err := g.a.backend.PendingQuestions().ListByConversationAndStatus(ctx, g.req.ConversationID, store.PendingQuestionStatusPending)
 		if err != nil {
-			g.a.Log.Warn("outstanding-ask guard could not read pending questions; allowing the ask", "err", err)
+			g.a.log.Warn("outstanding-ask guard could not read pending questions; allowing the ask", "err", err)
 		} else if len(pending) > 0 {
 			return nil, &tools.ErrNotAnswered{Message: g.a.message(i18n.QuestionAlreadyAsked)}
 		}
@@ -75,7 +75,7 @@ func (f questionFan) Ask(ctx context.Context, questions []tools.Question) (map[s
 		case err != nil:
 			// A handler erroring past ErrNotAnswered is a bug in that
 			// handler; it costs its channel, not the ask.
-			f.a.Log.Error("question handler failed", "err", err)
+			f.a.log.Error("question handler failed", "err", err)
 		default:
 			presented++
 			presentedWithoutError = true

@@ -1,15 +1,11 @@
 // Package chatmemory is the persistence contract for conversation history.
 //
-// spring-agent could lean on Spring AI's ChatMemoryRepository because the
-// framework shipped three implementations of it. eino ships none, so the
-// contract is ours — which turns out to be an improvement worth keeping even
-// where a library implementation exists: Spring's JDBC repository discards
-// tool-call messages, which forced spring-agent's AskedQuestionsRecorder
-// workaround (writing a synthetic assistant message after an ask, so later
-// runs knew one had happened). This repository stores every message kind, so
-// the workaround has no reason to exist and is not ported.
+// Eino does not prescribe a persistence implementation, so the contract stays
+// in core and each adapter owns its storage details. The repository stores
+// every message kind, including tool calls, so an asking turn remains ordinary
+// conversation history and the next run can see it.
 //
-// Like the dao contracts, implementations live in the persistence modules and
+// Like the persistence contracts, implementations live in the persistence modules and
 // share the database with the domain records.
 package chatmemory
 

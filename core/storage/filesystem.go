@@ -11,9 +11,8 @@ import (
 	"strings"
 )
 
-// Storage writes and reads files under a root directory. spring-agent's
-// interface carried Spring's MultipartFile and Resource types; the Go port
-// deals in plain io/fs and io, which is all any caller wanted from them.
+// Storage reads and writes files under a root directory using plain io/fs and
+// io values.
 type Storage interface {
 	// Init creates the root directory when missing.
 	Init() error

@@ -1,9 +1,7 @@
-// Package toolsearch indexes tool descriptions so a run with more MCP tools
-// than the model should see can offer a search instead of every definition
-// — the Go port of spring-agent's tool-search index, deliberately cut down:
-// in-heap vectors over an embeddings interface, keyed per user (a user's
-// servers are the same across their conversations), mirrored to a JSON file
-// so a restart does not re-embed everything.
+// Package toolsearch indexes tool descriptions so a run with many MCP tools
+// can offer a search instead of sending every definition to the model. It
+// uses in-memory vectors keyed per user and persists the index as JSON in the
+// user's workspace.
 package toolsearch
 
 import (

@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -60,31 +61,35 @@ func NewRouter(config RouterConfig) chi.Router {
 
 // Server owns the HTTP server settings and graceful shutdown policy.
 type Server struct {
-	HTTP *http.Server
-	Log  *slog.Logger
+	http *http.Server
 }
 
 // NewServer creates a server with conservative timeouts. The handler owns
 // application routes; this type only owns network lifecycle.
-func NewServer(address string, handler http.Handler, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
+func NewServer(address string, handler http.Handler) *Server {
+	return &Server{http: &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}}
+}
+
+// Addr reports the configured listen address.
+func (s *Server) Addr() string {
+	if s == nil || s.http == nil {
+		return ""
 	}
-	return &Server{HTTP: &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}, Log: logger}
+	return s.http.Addr
 }
 
 // Run serves until ctx is cancelled, then waits for active requests to leave.
 func (s *Server) Run(ctx context.Context) error {
-	if s == nil || s.HTTP == nil {
+	if s == nil || s.http == nil {
 		return errors.New("app: nil server")
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.HTTP.ListenAndServe() }()
+	go func() { errCh <- s.http.ListenAndServe() }()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := s.HTTP.Shutdown(shutdownCtx); err != nil {
+		if err := s.http.Shutdown(shutdownCtx); err != nil {
 			return err
 		}
 		return nil
@@ -110,9 +115,5 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = writeJSONValue(w, value)
-}
-
-func writeJSONValue(w http.ResponseWriter, value any) error {
-	return jsonEncoder(w, value)
+	_ = json.NewEncoder(w).Encode(value)
 }

@@ -18,28 +18,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/storage"
+	"github.com/ishi-o/golem/core/store"
 )
 
 // Handler serves published resources. It is an http.HandlerFunc compatible
 // with any router, not tied to chi; the app mounts it under /share/.
 type Handler struct {
-	Repos   dao.PublishedResourceRepo
-	Storage storage.Storage
-	Now     func() time.Time
-	Log     *slog.Logger
+	repos   store.PublishedResourceStore
+	storage storage.Storage
+	now     func() time.Time
+	log     *slog.Logger
 }
 
-// NewHandler wires a handler. now defaults to time.Now and log to the default
+// NewHandler constructs a handler. now defaults to time.Now and log to the default
 // logger.
-func NewHandler(repos dao.PublishedResourceRepo, store storage.Storage, log *slog.Logger) *Handler {
-	h := &Handler{Repos: repos, Storage: store, Log: log}
-	if h.Now == nil {
-		h.Now = time.Now
-	}
-	if h.Log == nil {
-		h.Log = slog.Default()
+func NewHandler(repos store.PublishedResourceStore, store storage.Storage, log *slog.Logger) *Handler {
+	h := &Handler{repos: repos, storage: store, log: log, now: time.Now}
+	if h.log == nil {
+		h.log = slog.Default()
 	}
 	return h
 }
@@ -48,7 +45,7 @@ func NewHandler(repos dao.PublishedResourceRepo, store storage.Storage, log *slo
 // router must leave the sub-path unconsumed after the token; this handler
 // reads it from the remaining URL path.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Repos == nil || h.Storage == nil {
+	if h == nil || h.repos == nil || h.storage == nil {
 		http.Error(w, "share service is not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -73,26 +70,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// An unparsable visibility is a 404 like an unknown token, for the same
 	// reason: the response must not distinguish "bad guess" from "good
 	// guess, wrong path".
-	visibility, ok := dao.VisibilityFrom(visibilityRaw)
+	visibility, ok := store.VisibilityFrom(visibilityRaw)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
 	ctx := r.Context()
-	resource, err := h.Repos.FindByID(ctx, token)
+	resource, err := h.repos.Get(ctx, token)
 	if err != nil {
-		h.Log.Error("published resource lookup failed", "token", token, "err", err)
+		h.log.Error("published resource lookup failed", "token", token, "err", err)
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
 		return
 	}
 	if resource == nil || resource.Visibility != visibility || resource.OwnerID != userID {
-		h.Log.Warn("no such published resource", "token", token, "visibility", visibilityRaw, "userId", userID)
+		h.log.Warn("no such published resource", "token", token, "visibility", visibilityRaw, "userId", userID)
 		http.NotFound(w, r)
 		return
 	}
 
-	if !resource.ExpiresAt.IsZero() && resource.ExpiresAt.Before(h.Now()) {
+	if !resource.ExpiresAt.IsZero() && resource.ExpiresAt.Before(h.now()) {
 		w.WriteHeader(http.StatusGone)
 		return
 	}
@@ -122,18 +119,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storageKey := path.Join(visibilityDir, userID, token, filename)
-	resolved, err := h.Storage.Resolve(storageKey)
+	resolved, err := h.storage.Resolve(storageKey)
 	if err != nil {
 		// Resolve rejects keys escaping the root; reaching that here means
 		// the sub-path carried traversal, and the answer is the same 404 as
 		// a missing file so the shape of the storage layout stays private.
-		h.Log.Warn("rejected storage key outside the storage root", "token", token, "key", storageKey)
+		h.log.Warn("rejected storage key outside the storage root", "token", token, "key", storageKey)
 		http.NotFound(w, r)
 		return
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || info.IsDir() {
-		h.Log.Warn("published file missing on disk", "token", token, "path", resolved)
+		h.log.Warn("published file missing on disk", "token", token, "path", resolved)
 		http.NotFound(w, r)
 		return
 	}

@@ -18,8 +18,8 @@ import (
 
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
-	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/storage"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
 	"github.com/ishi-o/golem/test/mocks"
 )
@@ -106,18 +106,20 @@ func textChunks(s string) []*schema.Message {
 	return out
 }
 
-func newTestAgent(t *testing.T, m model.ToolCallingChatModel) (*agent.Agent, *sqlxFixture) {
+func newTestAgent(t *testing.T, m model.ToolCallingChatModel, configure ...func(*config.Config)) (*agent.Agent, *sqlxFixture) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{}
 	require.NoError(t, cfg.Normalize())
 	cfg.Storage.Location = dir
+	for _, configure := range configure {
+		configure(&cfg)
+	}
 	fixture := newSQLXFixture(t)
 	t.Cleanup(func() { require.NoError(t, fixture.Close()) })
 	backend := fixture.Backend()
 	provider := tools.NewProvider(cfg, storage.NewWorkspaceFactory(dir), backend, nil)
-	a := agent.New(m, fixture.Memory(), provider, cfg)
-	a.Repos = backend
+	a := agent.New(m, fixture.Memory(), provider, cfg, agent.WithBackend(backend))
 	return a, fixture
 }
 
@@ -141,12 +143,12 @@ func TestRunStreamsAccumulatedContentAndFinishesCompleted(t *testing.T) {
 	var contents []string
 	done := make(chan agent.Outcome, 1)
 	listener := agent.ListenerFuncs{
-		OnContentF: func(soFar string) {
+		OnContentFunc: func(soFar string) {
 			mu.Lock()
 			contents = append(contents, soFar)
 			mu.Unlock()
 		},
-		OnFinishedF: func(o agent.Outcome) { done <- o },
+		OnFinishedFunc: func(o agent.Outcome) { done <- o },
 	}
 	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "hi",
 		agent.WithRequestID("run-1"),
@@ -189,8 +191,8 @@ func TestRunReportsModelFailure(t *testing.T) {
 	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "hello",
 		agent.WithIdentity("user-error", "chat-error", "p2p"),
 		agent.WithListener(agent.ListenerFuncs{
-			OnErrorF:    func(err error) { errs <- err },
-			OnFinishedF: func(o agent.Outcome) { done <- o },
+			OnErrorFunc:    func(err error) { errs <- err },
+			OnFinishedFunc: func(o agent.Outcome) { done <- o },
 		}),
 	)))
 
@@ -222,7 +224,7 @@ func TestRunExecutesToolCallsAndContinues(t *testing.T) {
 	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "what time is it?",
 		agent.WithIdentity("user-2", "chat-2", "p2p"),
 		agent.WithConversation("conv-2", "root-2", "msg-2"),
-		agent.WithListener(agent.ListenerFuncs{OnFinishedF: func(o agent.Outcome) { done <- o }}),
+		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(o agent.Outcome) { done <- o }}),
 	)))
 	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
 	assert.Equal(t, 2, m.callCount(), "tool loop did not continue")
@@ -245,7 +247,7 @@ func TestCancelEndsRunCancelled(t *testing.T) {
 	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "slow thing",
 		agent.WithRequestID("cancel-me"),
 		agent.WithIdentity("user-3", "chat-3", "p2p"),
-		agent.WithListener(agent.ListenerFuncs{OnFinishedF: func(o agent.Outcome) { done <- o }}),
+		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(o agent.Outcome) { done <- o }}),
 	)))
 	require.True(t, a.Cancel("cancel-me"), "cancel did not find the run")
 	require.Equal(t, agent.OutcomeCancelled, waitFinished(t, done))
@@ -266,15 +268,16 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 		}}}},
 		textChunks("doing the safe thing"),
 	}}
-	a, _ := newTestAgent(t, m)
-	a.Config.AI.Tools.AskUserQuestion.Enabled = true
+	a, _ := newTestAgent(t, m, func(cfg *config.Config) {
+		cfg.AI.Tools.AskUserQuestion.Enabled = true
+	})
 	done := make(chan agent.Outcome, 1)
 	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "do the thing",
 		agent.WithIdentity("user-4", "chat-4", "p2p"),
 		agent.WithConversation("conv-4", "root-4", "msg-4"),
 		agent.WithListener(agent.ListenerFuncs{
-			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(inline) },
-			OnFinishedF: func(o agent.Outcome) { done <- o },
+			OnStartFunc:    func(r *agent.RunContext) { r.AddQuestionHandler(inline) },
+			OnFinishedFunc: func(o agent.Outcome) { done <- o },
 		}),
 	)))
 	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
@@ -289,21 +292,22 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 		}}}},
 		textChunks("never reached"),
 	}}
-	a2, _ := newTestAgent(t, m2)
-	a2.Config.AI.Tools.AskUserQuestion.Enabled = true
+	a2, _ := newTestAgent(t, m2, func(cfg *config.Config) {
+		cfg.AI.Tools.AskUserQuestion.Enabled = true
+	})
 	done2 := make(chan agent.Outcome, 1)
 	require.NoError(t, a2.Fire(agent.NewRequest(agent.ChatScenario, "do the other thing",
 		agent.WithIdentity("user-5", "chat-5", "p2p"),
 		agent.WithConversation("conv-5", "root-5", "msg-5"),
 		agent.WithListener(agent.ListenerFuncs{
-			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(async) },
-			OnFinishedF: func(o agent.Outcome) { done2 <- o },
+			OnStartFunc:    func(r *agent.RunContext) { r.AddQuestionHandler(async) },
+			OnFinishedFunc: func(o agent.Outcome) { done2 <- o },
 		}),
 	)))
 	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done2))
 	assert.Equal(t, 1, m2.callCount(), "async ask should end the turn")
 	// The pending question is recorded: the outstanding-ask guard's input.
-	pendingQuestions, err := pending.Backend().PendingQuestions().FindByConversationIDAndStatus(context.Background(), "conv-5", "PENDING")
+	pendingQuestions, err := pending.Backend().PendingQuestions().ListByConversationAndStatus(context.Background(), "conv-5", "PENDING")
 	require.NoError(t, err)
 	require.Len(t, pendingQuestions, 1)
 }
@@ -316,7 +320,9 @@ func (h *inlineHandler) Ask(_ context.Context, _ []tools.Question) (map[string]s
 
 func (h *inlineHandler) AnswersInline() bool { return true }
 
-type asyncHandler struct{ repo dao.PendingQuestionRepo }
+type asyncHandler struct {
+	repo store.PendingQuestionStore
+}
 
 func (h *asyncHandler) Ask(ctx context.Context, questions []tools.Question) (map[string]string, error) {
 	// The Feishu shape: persist the ask, present it, return nothing.
@@ -326,12 +332,12 @@ func (h *asyncHandler) Ask(ctx context.Context, questions []tools.Question) (map
 	return map[string]string{}, nil
 }
 
-func pendingQuestion(questions []tools.Question) dao.PendingQuestion {
+func pendingQuestion(questions []tools.Question) store.PendingQuestion {
 	// (kept dumb on purpose: the model-phrased questions serialized)
-	return dao.PendingQuestion{
+	return store.PendingQuestion{
 		ID:             "pq-test",
 		ConversationID: "conv-5",
-		Status:         dao.PendingQuestionStatusPending,
+		Status:         store.PendingQuestionStatusPending,
 	}
 }
 

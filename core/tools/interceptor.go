@@ -10,16 +10,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Interceptor is cross-cutting behaviour around tool calls, applied by
-// wrapping every tool the run offers — the Go shape of spring-agent's
-// ToolCallInterceptor. BeforeCall sees the arguments the model produced and
-// may rewrite them; AfterCall sees the result and may replace it (the large
-// response interceptor diverts to a file and returns a pointer instead).
+// Interceptor is cross-cutting behavior around tool calls. BeforeCall sees
+// the arguments the model produced and may rewrite them; AfterCall sees the
+// result and may replace it.
 //
 // An interceptor may also end the turn: EndTurn in the AfterCall result
-// stops the run after this tool returns, the equivalent of Spring AI's
-// returnDirect metadata — the ask tool uses it when answers can only arrive
-// after the run is over.
+// stops the run after this tool returns. The ask tool uses it when answers can
+// only arrive after the run is over.
 type Interceptor interface {
 	BeforeCall(ctx context.Context, name string, arguments string) (string, error)
 	AfterCall(ctx context.Context, name string, arguments string, result string) (string, bool, error)
@@ -49,8 +46,7 @@ func (f InterceptorFuncs) AfterCall(ctx context.Context, name, arguments, result
 // intercepted wraps an InvokableTool with the interceptor chain. It
 // forwards Info untouched — the metadata the model sees must be the wrapped
 // tool's own, or a tool whose result ends the turn would silently become one
-// whose result does not (the exact bug spring-agent's InterceptingToolCallback
-// comment records).
+// whose result does not.
 type intercepted struct {
 	delegate     tool.InvokableTool
 	interceptors []Interceptor

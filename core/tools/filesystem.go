@@ -17,10 +17,8 @@ import (
 )
 
 // FileSystemTools are the file tools of one run, rooted at the user's
-// workspace — spring-agent's FileSystemTools over an allowedDirectory. The
-// root is enforced on every path: the workspace is the agent's scratch
-// space, and a model-walked "../" must not turn it into a file reader for
-// the whole machine.
+// workspace. The root is enforced on every path: a model-walked "../" must
+// not turn the workspace into a file reader for the whole machine.
 //
 // One instance per run (not one per process) because the root is per user.
 type FileSystemTools struct {

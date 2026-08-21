@@ -26,10 +26,10 @@ func main() {
 		os.Exit(1)
 	}
 	router := app.NewRouter(app.RouterConfig{Logger: logger, Ready: func(context.Context) error { return nil }})
-	server := app.NewServer(envOr("GOLEM_HTTP_ADDR", ":8080"), router, logger)
+	server := app.NewServer(envOr("GOLEM_HTTP_ADDR", ":8080"), router)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	logger.Info("golem app listening", "address", server.HTTP.Addr, "config", cfg.String())
+	logger.Info("golem app listening", "address", server.Addr(), "config", cfg.String())
 	if err := server.Run(ctx); err != nil && err != http.ErrServerClosed {
 		logger.Error("HTTP server stopped", "err", err)
 		os.Exit(1)

@@ -1,4 +1,4 @@
-package daocontract
+package storecontract
 
 import (
 	"context"
@@ -25,9 +25,8 @@ func testChatMemory(t *testing.T, f Fixture) {
 	loaded, err := mem.Load(ctx, conv, 0)
 	require.NoError(t, err)
 	require.Len(t, loaded, len(messages))
-	// Tool messages must survive the round trip — the property whose absence
-	// in Spring's JDBC repository forced spring-agent's synthetic-message
-	// workaround. See chatmemory's package comment.
+	// Tool messages must survive the round trip because they are part of the
+	// conversation history used by the next run.
 	assert.Equal(t, schema.Tool, loaded[2].Role)
 	assert.Equal(t, "c1", loaded[2].ToolCallID)
 	assert.Len(t, loaded[1].ToolCalls, 1)

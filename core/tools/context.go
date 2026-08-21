@@ -2,12 +2,9 @@
 // read, the interceptor chain, the composition that assembles a run's tool
 // set, and the built-in tools.
 //
-// spring-agent threaded identity to tools through Spring AI's ToolContext —
-// a map carried alongside the model call. eino's InvokableRun takes a plain
-// context.Context, so the Go port carries identity the Go way: as typed
-// context values, assembled once by the agent before the run starts. A tool
-// reads them with tools.UserID.Get(ctx), never by string key — the typed key
-// is what keeps a stringly identity bug from compiling.
+// Eino tools receive a plain context.Context, so the runtime carries identity
+// as typed context values, assembled once by the agent before the run starts.
+// A tool reads them with tools.UserID.Get(ctx), never by string key.
 package tools
 
 import "context"
@@ -82,7 +79,7 @@ func (e *MissingError) Error() string { return "tool context value " + e.key + "
 
 // The identity keys the runtime forces onto every run, after the request's
 // own values, so a surface cannot mis-state who is talking. The names match
-// spring-agent's ToolContexts keys.
+// The names are also used in logs and diagnostics.
 var (
 	// UserID is the channel identity of the user whose words started the run.
 	UserID = NewKey[string]("userId")

@@ -11,11 +11,9 @@ import (
 )
 
 // LargeResponseInterceptor diverts an oversized tool result to a file in the
-// user's workspace and hands the model a pointer instead — spring-agent's
-// LargeResponseInterceptor. A 50k-line listing pasted into the conversation
-// buys one turn of usefulness and crowds every turn after it; the same
-// listing in a file the model can Read and Grep is worth more and costs
-// less.
+// user's workspace and hands the model a pointer instead. A large listing in
+// the conversation crowds every later turn; a file and short pointer preserve
+// the result without consuming the context window.
 type LargeResponseInterceptor struct {
 	// GuideThreshold is the result length (in bytes) that triggers a divert.
 	GuideThreshold int

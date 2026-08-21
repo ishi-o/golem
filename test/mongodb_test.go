@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/ishi-o/golem/core/chatmemory"
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	mongostore "github.com/ishi-o/golem/store/mongodb"
-	"github.com/ishi-o/golem/test/daocontract"
+	"github.com/ishi-o/golem/test/storecontract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +43,7 @@ func newMongoFixture(t *testing.T) *mongoFixture {
 	return &mongoFixture{clientClose: func() error { return client.Disconnect(context.Background()) }, store: store}
 }
 
-func (f *mongoFixture) Backend() dao.Backend          { return f.store }
+func (f *mongoFixture) Backend() store.Backend        { return f.store }
 func (f *mongoFixture) Memory() chatmemory.Repository { return f.store }
 func (f *mongoFixture) Owner() string {
 	return fmt.Sprintf("mongo-owner-%d", f.owner.Add(1))
@@ -55,5 +55,5 @@ func TestMongoPersistenceContract(t *testing.T) {
 	defer func() {
 		assert.NoError(t, fixture.Close())
 	}()
-	daocontract.Run(t, fixture)
+	storecontract.Run(t, fixture)
 }

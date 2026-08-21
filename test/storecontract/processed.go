@@ -1,4 +1,4 @@
-package daocontract
+package storecontract
 
 import (
 	"context"

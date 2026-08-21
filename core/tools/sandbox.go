@@ -17,7 +17,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 )
 
 // Sandbox owns one disposable command environment per user. The Docker and
@@ -53,7 +53,7 @@ type SandboxToolsConfig struct {
 	DefaultTimeout  time.Duration
 	MaxTimeout      time.Duration
 	RestartToolName string
-	Credentials     dao.ShellCredentialRepo
+	Credentials     store.ShellCredentialStore
 }
 
 func (c *SandboxToolsConfig) normalize() error {
@@ -95,12 +95,12 @@ func NewSandboxTools(sandbox Sandbox, config SandboxToolsConfig) ([]tool.Invokab
 // CredentialsFromRepository adapts the persistence contract for a sandbox
 // backend. Backends call the resolver only while creating a fresh sandbox, so
 // changing a credential takes effect after the corresponding restart tool.
-func CredentialsFromRepository(repo dao.ShellCredentialRepo) CredentialResolver {
+func CredentialsFromRepository(repo store.ShellCredentialStore) CredentialResolver {
 	return func(ctx context.Context, userID string) (map[string]string, error) {
 		if repo == nil {
 			return nil, nil
 		}
-		credentials, err := repo.FindByOwnerID(ctx, userID)
+		credentials, err := repo.ListByOwner(ctx, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -476,7 +476,7 @@ func minInt(a, b int) int {
 
 // NewCredentialTools creates the three tools that manage credentials without
 // ever returning a stored value to the model.
-func NewCredentialTools(repo dao.ShellCredentialRepo, restartToolName string) []tool.InvokableTool {
+func NewCredentialTools(repo store.ShellCredentialStore, restartToolName string) []tool.InvokableTool {
 	if repo == nil {
 		return nil
 	}
@@ -501,7 +501,7 @@ func NewCredentialTools(repo dao.ShellCredentialRepo, restartToolName string) []
 				if len([]byte(in.Value)) > 64*1024 {
 					return "Error: credential value is larger than 65536 bytes", nil
 				}
-				if err := repo.Save(ctx, dao.ShellCredential{ID: dao.ShellCredentialID(userID, in.Name), OwnerID: userID, Name: in.Name, Value: in.Value}); err != nil {
+				if err := repo.Save(ctx, store.ShellCredential{ID: store.ShellCredentialID(userID, in.Name), OwnerID: userID, Name: in.Name, Value: in.Value}); err != nil {
 					return "Error storing credential: " + err.Error(), nil
 				}
 				return "Credential " + in.Name + " stored. Run " + restartToolName + " to expose it in the next sandbox.", nil
@@ -515,7 +515,7 @@ func NewCredentialTools(repo dao.ShellCredentialRepo, restartToolName string) []
 				if err != nil {
 					return "Error: " + err.Error(), nil
 				}
-				credentials, err := repo.FindByOwnerID(ctx, userID)
+				credentials, err := repo.ListByOwner(ctx, userID)
 				if err != nil {
 					return "Error listing credentials: " + err.Error(), nil
 				}
@@ -546,7 +546,7 @@ func NewCredentialTools(repo dao.ShellCredentialRepo, restartToolName string) []
 				if !IsValidCredentialName(in.Name) {
 					return "Error: invalid credential name. Use a POSIX environment-variable name.", nil
 				}
-				if err := repo.DeleteByOwnerIDAndName(ctx, userID, in.Name); err != nil {
+				if err := repo.DeleteByOwnerAndName(ctx, userID, in.Name); err != nil {
 					return "Error deleting credential: " + err.Error(), nil
 				}
 				return "Credential " + in.Name + " removed. Run " + restartToolName + " to drop it from the sandbox.", nil

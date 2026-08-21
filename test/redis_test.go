@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/ishi-o/golem/core/chatmemory"
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	redisstore "github.com/ishi-o/golem/store/redis"
-	"github.com/ishi-o/golem/test/daocontract"
+	"github.com/ishi-o/golem/test/storecontract"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +43,7 @@ func newRedisFixture(t *testing.T) *redisFixture {
 	return &redisFixture{client: client, store: store}
 }
 
-func (f *redisFixture) Backend() dao.Backend          { return f.store }
+func (f *redisFixture) Backend() store.Backend        { return f.store }
 func (f *redisFixture) Memory() chatmemory.Repository { return f.store }
 func (f *redisFixture) Owner() string {
 	return fmt.Sprintf("redis-owner-%d", f.owner.Add(1))
@@ -55,5 +55,5 @@ func TestRedisPersistenceContract(t *testing.T) {
 	defer func() {
 		assert.NoError(t, fixture.Close())
 	}()
-	daocontract.Run(t, fixture)
+	storecontract.Run(t, fixture)
 }

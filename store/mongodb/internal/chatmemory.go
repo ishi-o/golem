@@ -1,4 +1,4 @@
-package mongostore
+package mongodb
 
 import (
 	"context"

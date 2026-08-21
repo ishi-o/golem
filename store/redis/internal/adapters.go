@@ -1,4 +1,4 @@
-package redisstore
+package redis
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/ishi-o/golem/core/chatmemory"
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/redis/go-redis/v9"
 )
 
-func (s *Store) updatePendingStatus(ctx context.Context, id string, status dao.PendingQuestionStatus) error {
+func (s *Store) updatePendingStatus(ctx context.Context, id string, status store.PendingQuestionStatus) error {
 	key := s.record("pending", id)
 	err := s.watch(ctx, key, func(tx *redis.Tx) error {
 		data, err := tx.Get(ctx, key).Bytes()
@@ -44,7 +44,7 @@ func (s *Store) updatePendingStatus(ctx context.Context, id string, status dao.P
 	return wrap("update pending question status", err)
 }
 
-func (s *Store) updateTaskStatus(ctx context.Context, id string, status dao.ScheduledTaskStatus) error {
+func (s *Store) updateTaskStatus(ctx context.Context, id string, status store.ScheduledTaskStatus) error {
 	key := s.record("task", id)
 	err := s.watch(ctx, key, func(tx *redis.Tx) error {
 		data, err := tx.Get(ctx, key).Bytes()
@@ -93,7 +93,7 @@ func (s *Store) watch(ctx context.Context, key string, fn func(*redis.Tx) error)
 }
 
 func (s *Store) deleteCredential(ctx context.Context, ownerID, name string) error {
-	id := dao.ShellCredentialID(ownerID, name)
+	id := store.ShellCredentialID(ownerID, name)
 	pipe := s.client.TxPipeline()
 	pipe.Del(ctx, s.record("credential", id))
 	pipe.SRem(ctx, s.all("credential"), id)
@@ -139,19 +139,19 @@ func (s *Store) tx(ctx context.Context, fn func(redis.Pipeliner) error) error {
 	return wrap("commit index update", err)
 }
 
-type mcpRepo struct{ store *Store }
+type mcpStore struct{ store *Store }
 
-func (r mcpRepo) Save(ctx context.Context, value dao.McpServerConfig) error {
+func (r mcpStore) Save(ctx context.Context, value store.MCPServerConfig) error {
 	return r.store.saveMCP(ctx, value)
 }
-func (r mcpRepo) FindByOwnerID(ctx context.Context, ownerID string) ([]dao.McpServerConfig, error) {
+func (r mcpStore) ListByOwner(ctx context.Context, ownerID string) ([]store.MCPServerConfig, error) {
 	ids, err := r.store.findMCPIDs(ctx, r.store.index("mcp-owner", ownerID))
 	if err != nil {
 		return nil, err
 	}
 	return r.store.findMCPByIDs(ctx, ids)
 }
-func (r mcpRepo) FindByOwnerIDAndName(ctx context.Context, ownerID, name string) (*dao.McpServerConfig, error) {
+func (r mcpStore) GetByOwnerAndName(ctx context.Context, ownerID, name string) (*store.MCPServerConfig, error) {
 	ids, err := r.store.findMCPIDs(ctx, r.store.index("mcp-name", ownerID+"\x00"+name))
 	if err != nil || len(ids) == 0 {
 		return nil, err
@@ -162,11 +162,11 @@ func (r mcpRepo) FindByOwnerIDAndName(ctx context.Context, ownerID, name string)
 	}
 	return &values[0], nil
 }
-func (r mcpRepo) ExistsByOwnerIDAndName(ctx context.Context, ownerID, name string) (bool, error) {
+func (r mcpStore) ExistsByOwnerAndName(ctx context.Context, ownerID, name string) (bool, error) {
 	ids, err := r.store.findMCPIDs(ctx, r.store.index("mcp-name", ownerID+"\x00"+name))
 	return len(ids) > 0, err
 }
-func (r mcpRepo) DeleteByOwnerIDAndName(ctx context.Context, ownerID, name string) error {
+func (r mcpStore) DeleteByOwnerAndName(ctx context.Context, ownerID, name string) error {
 	ids, err := r.store.findMCPIDs(ctx, r.store.index("mcp-name", ownerID+"\x00"+name))
 	if err != nil {
 		return err
@@ -191,7 +191,7 @@ func (r mcpRepo) DeleteByOwnerIDAndName(ctx context.Context, ownerID, name strin
 	}
 	return nil
 }
-func (r mcpRepo) FindBySharedWithIn(ctx context.Context, identifiers []string) ([]dao.McpServerConfig, error) {
+func (r mcpStore) ListSharedWith(ctx context.Context, identifiers []string) ([]store.MCPServerConfig, error) {
 	seen := map[string]struct{}{}
 	for _, identifier := range identifiers {
 		ids, err := r.store.findMCPIDs(ctx, r.store.index("mcp-shared", identifier))
@@ -209,17 +209,17 @@ func (r mcpRepo) FindBySharedWithIn(ctx context.Context, identifiers []string) (
 	sort.Strings(ids)
 	return r.store.findMCPByIDs(ctx, ids)
 }
-func (r mcpRepo) FindAccessibleTo(ctx context.Context, ownerID string, identifiers []string) ([]dao.McpServerConfig, error) {
-	owned, err := r.FindByOwnerID(ctx, ownerID)
+func (r mcpStore) ListAccessibleTo(ctx context.Context, ownerID string, identifiers []string) ([]store.MCPServerConfig, error) {
+	owned, err := r.ListByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	shared, err := r.FindBySharedWithIn(ctx, identifiers)
+	shared, err := r.ListSharedWith(ctx, identifiers)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]struct{}{}
-	out := make([]dao.McpServerConfig, 0, len(owned)+len(shared))
+	out := make([]store.MCPServerConfig, 0, len(owned)+len(shared))
 	for _, value := range append(owned, shared...) {
 		if _, ok := seen[value.ID]; !ok {
 			seen[value.ID] = struct{}{}
@@ -230,20 +230,20 @@ func (r mcpRepo) FindAccessibleTo(ctx context.Context, ownerID string, identifie
 	return out, nil
 }
 
-type pendingRepo struct{ store *Store }
+type pendingStore struct{ store *Store }
 
-func (r pendingRepo) Save(ctx context.Context, value dao.PendingQuestion) error {
+func (r pendingStore) Save(ctx context.Context, value store.PendingQuestion) error {
 	return r.store.savePending(ctx, value)
 }
-func (r pendingRepo) FindByID(ctx context.Context, id string) (*dao.PendingQuestion, error) {
+func (r pendingStore) Get(ctx context.Context, id string) (*store.PendingQuestion, error) {
 	return r.store.getPending(ctx, id)
 }
-func (r pendingRepo) FindByConversationIDAndStatus(ctx context.Context, conversationID string, status dao.PendingQuestionStatus) ([]dao.PendingQuestion, error) {
+func (r pendingStore) ListByConversationAndStatus(ctx context.Context, conversationID string, status store.PendingQuestionStatus) ([]store.PendingQuestion, error) {
 	ids, err := r.store.findPendingIDs(ctx, conversationID, status)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]dao.PendingQuestion, 0, len(ids))
+	out := make([]store.PendingQuestion, 0, len(ids))
 	for _, id := range ids {
 		value, err := r.store.getPending(ctx, id)
 		if err != nil {
@@ -255,58 +255,58 @@ func (r pendingRepo) FindByConversationIDAndStatus(ctx context.Context, conversa
 	}
 	return out, nil
 }
-func (r pendingRepo) UpdateStatus(ctx context.Context, id string, status dao.PendingQuestionStatus) error {
+func (r pendingStore) SetStatus(ctx context.Context, id string, status store.PendingQuestionStatus) error {
 	return r.store.updatePendingStatus(ctx, id, status)
 }
 
-type resourceRepo struct{ store *Store }
+type resourceStore struct{ store *Store }
 
-func (r resourceRepo) Save(ctx context.Context, value dao.PublishedResource) error {
+func (r resourceStore) Save(ctx context.Context, value store.PublishedResource) error {
 	return r.store.saveResource(ctx, value)
 }
-func (r resourceRepo) FindByID(ctx context.Context, id string) (*dao.PublishedResource, error) {
+func (r resourceStore) Get(ctx context.Context, id string) (*store.PublishedResource, error) {
 	return r.store.findResource(ctx, id)
 }
-func (r resourceRepo) DeleteByID(ctx context.Context, id string) error {
+func (r resourceStore) Delete(ctx context.Context, id string) error {
 	return wrap("delete published resource", r.store.client.Del(ctx, r.store.record("resource", id)).Err())
 }
 
-type taskRepo struct{ store *Store }
+type taskStore struct{ store *Store }
 
-func (r taskRepo) Save(ctx context.Context, value dao.ScheduledTask) error {
+func (r taskStore) Save(ctx context.Context, value store.ScheduledTask) error {
 	return r.store.saveTask(ctx, value)
 }
-func (r taskRepo) FindByID(ctx context.Context, id string) (*dao.ScheduledTask, error) {
+func (r taskStore) Get(ctx context.Context, id string) (*store.ScheduledTask, error) {
 	var document taskDocument
 	found, err := r.store.get(ctx, r.store.record("task", id), &document)
 	if err != nil || !found {
 		return nil, err
 	}
-	value := dao.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, Background: document.Background, Status: dao.ScheduledTaskStatus(document.Status)}
+	value := store.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, Background: document.Background, Status: store.ScheduledTaskStatus(document.Status)}
 	return &value, nil
 }
-func (r taskRepo) FindByStatus(ctx context.Context, status dao.ScheduledTaskStatus) ([]dao.ScheduledTask, error) {
+func (r taskStore) ListByStatus(ctx context.Context, status store.ScheduledTaskStatus) ([]store.ScheduledTask, error) {
 	ids, err := r.store.client.SMembers(ctx, r.store.index("task-status", string(status))).Result()
 	if err != nil {
 		return nil, wrap("find scheduled tasks", err)
 	}
 	return r.store.getTasks(ctx, ids)
 }
-func (r taskRepo) FindByUserIDAndStatus(ctx context.Context, userID string, status dao.ScheduledTaskStatus) ([]dao.ScheduledTask, error) {
+func (r taskStore) ListByUserAndStatus(ctx context.Context, userID string, status store.ScheduledTaskStatus) ([]store.ScheduledTask, error) {
 	ids, err := r.store.client.SMembers(ctx, r.store.index("task-user-status", userID+"\x00"+string(status))).Result()
 	if err != nil {
 		return nil, wrap("find scheduled tasks", err)
 	}
 	return r.store.getTasks(ctx, ids)
 }
-func (r taskRepo) UpdateStatus(ctx context.Context, id string, status dao.ScheduledTaskStatus) error {
+func (r taskStore) SetStatus(ctx context.Context, id string, status store.ScheduledTaskStatus) error {
 	return r.store.updateTaskStatus(ctx, id, status)
 }
 
-type credentialRepo struct{ store *Store }
+type credentialStore struct{ store *Store }
 
-func (r credentialRepo) Save(ctx context.Context, value dao.ShellCredential) error {
-	value.ID = dao.ShellCredentialID(value.OwnerID, value.Name)
+func (r credentialStore) Save(ctx context.Context, value store.ShellCredential) error {
+	value.ID = store.ShellCredentialID(value.OwnerID, value.Name)
 	if err := r.store.saveCredential(ctx, value); err != nil {
 		return err
 	}
@@ -317,29 +317,31 @@ func (r credentialRepo) Save(ctx context.Context, value dao.ShellCredential) err
 	_, err := pipe.Exec(ctx)
 	return wrap("index shell credential", err)
 }
-func (r credentialRepo) FindByOwnerID(ctx context.Context, ownerID string) ([]dao.ShellCredential, error) {
+func (r credentialStore) ListByOwner(ctx context.Context, ownerID string) ([]store.ShellCredential, error) {
 	return r.store.findCredentials(ctx, ownerID)
 }
-func (r credentialRepo) FindByOwnerIDAndName(ctx context.Context, ownerID, name string) (*dao.ShellCredential, error) {
-	id := dao.ShellCredentialID(ownerID, name)
+func (r credentialStore) GetByOwnerAndName(ctx context.Context, ownerID, name string) (*store.ShellCredential, error) {
+	id := store.ShellCredentialID(ownerID, name)
 	var value credentialDocument
 	found, err := r.store.get(ctx, r.store.record("credential", id), &value)
 	if err != nil || !found {
 		return nil, err
 	}
-	result := dao.ShellCredential{ID: value.ID, OwnerID: value.OwnerID, Name: value.Name, Value: value.Value}
+	result := store.ShellCredential{ID: value.ID, OwnerID: value.OwnerID, Name: value.Name, Value: value.Value}
 	return &result, nil
 }
-func (r credentialRepo) DeleteByOwnerIDAndName(ctx context.Context, ownerID, name string) error {
+func (r credentialStore) DeleteByOwnerAndName(ctx context.Context, ownerID, name string) error {
 	return r.store.deleteCredential(ctx, ownerID, name)
 }
 
-type processedRepo struct{ store *Store }
+type processedStore struct{ store *Store }
 
-func (r processedRepo) Claim(ctx context.Context, id string) (bool, error) {
+func (r processedStore) Claim(ctx context.Context, id string) (bool, error) {
 	return r.store.claim(ctx, id)
 }
-func (r processedRepo) Release(ctx context.Context, id string) error { return r.store.release(ctx, id) }
+func (r processedStore) Release(ctx context.Context, id string) error {
+	return r.store.release(ctx, id)
+}
 
 func wrap(operation string, err error) error {
 	if err == nil {
@@ -349,6 +351,6 @@ func wrap(operation string, err error) error {
 }
 
 var (
-	_ dao.Backend           = (*Store)(nil)
+	_ store.Backend         = (*Store)(nil)
 	_ chatmemory.Repository = (*Store)(nil)
 )

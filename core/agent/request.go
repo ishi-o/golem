@@ -29,23 +29,23 @@ type Request struct {
 	Background bool
 	// PromptVariables extend the system prompt's variable set.
 	PromptVariables map[string]string
-	// Text is the user message. Images may accompany it.
+	// Images may accompany Text.
 	Images []Image
-	// Listeners observe this run, alongside any the wiring declared.
+	// Listeners observe this run, alongside any application-level observers.
 	Listeners []ResponseListener
 	// TodoHandlers receive this run's todo updates.
 	TodoHandlers []tools.TodoEventHandler
 
-	// UserText is set by the Text option; Message overrides it wholesale.
-	UserText string
+	// Text is the user message passed to the model.
+	Text string
 }
 
-// Option mutates a Request during NewRequest.
-type Option func(*Request)
+// RequestOption mutates a Request during NewRequest.
+type RequestOption func(*Request)
 
 // NewRequest starts a Request for a scenario. Required: scenario and text.
-func NewRequest(scenario Scenario, text string, opts ...Option) Request {
-	r := Request{Scenario: scenario, UserText: text, ChatType: "p2p"}
+func NewRequest(scenario Scenario, text string, opts ...RequestOption) Request {
+	r := Request{Scenario: scenario, Text: text, ChatType: "p2p"}
 	for _, o := range opts {
 		o(&r)
 	}
@@ -56,10 +56,10 @@ func NewRequest(scenario Scenario, text string, opts ...Option) Request {
 }
 
 // WithRequestID names the run for Cancel.
-func WithRequestID(id string) Option { return func(r *Request) { r.RequestID = id } }
+func WithRequestID(id string) RequestOption { return func(r *Request) { r.RequestID = id } }
 
 // WithIdentity sets who is talking and where.
-func WithIdentity(userID, chatID, chatType string) Option {
+func WithIdentity(userID, chatID, chatType string) RequestOption {
 	return func(r *Request) {
 		r.UserID, r.ChatID, r.ChatType = userID, chatID, chatType
 	}
@@ -67,23 +67,25 @@ func WithIdentity(userID, chatID, chatType string) Option {
 
 // WithConversation places the run in a conversation (chat memory) and
 // identifies the root and reply messages for surfaces.
-func WithConversation(conversationID, rootMessageID, replyMessageID string) Option {
+func WithConversation(conversationID, rootMessageID, replyMessageID string) RequestOption {
 	return func(r *Request) {
 		r.ConversationID, r.RootMessageID, r.ReplyMessageID = conversationID, rootMessageID, replyMessageID
 	}
 }
 
 // WithBackground marks the run unattended (no answer of its own).
-func WithBackground(background bool) Option { return func(r *Request) { r.Background = background } }
+func WithBackground(background bool) RequestOption {
+	return func(r *Request) { r.Background = background }
+}
 
 // WithPromptVariables supplies extra system-prompt variables.
-func WithPromptVariables(vars map[string]string) Option {
+func WithPromptVariables(vars map[string]string) RequestOption {
 	return func(r *Request) { r.PromptVariables = vars }
 }
 
 // WithImages attaches images to the user message, as URLs or data-URI
 // Base64 payloads.
-func WithImages(images ...Image) Option {
+func WithImages(images ...Image) RequestOption {
 	return func(r *Request) { r.Images = append(r.Images, images...) }
 }
 
@@ -105,24 +107,24 @@ func (i Image) part() schema.ChatMessagePart {
 }
 
 // WithListener attaches a run listener.
-func WithListener(l ResponseListener) Option {
+func WithListener(l ResponseListener) RequestOption {
 	return func(r *Request) { r.Listeners = append(r.Listeners, l) }
 }
 
 // WithTodoHandler attaches a todo handler.
-func WithTodoHandler(h tools.TodoEventHandler) Option {
+func WithTodoHandler(h tools.TodoEventHandler) RequestOption {
 	return func(r *Request) { r.TodoHandlers = append(r.TodoHandlers, h) }
 }
 
 // UserMessage assembles the user message for the model call.
 func (r Request) UserMessage() *schema.Message {
-	msg := &schema.Message{Role: schema.User, Content: r.UserText}
+	msg := &schema.Message{Role: schema.User, Content: r.Text}
 	if len(r.Images) > 0 {
 		// MultiContent replaces Content for multimodal models; the text is
 		// carried as the first part so nothing is lost.
-		if r.UserText != "" {
+		if r.Text != "" {
 			msg.MultiContent = append(msg.MultiContent, schema.ChatMessagePart{
-				Type: schema.ChatMessagePartTypeText, Text: r.UserText,
+				Type: schema.ChatMessagePartTypeText, Text: r.Text,
 			})
 		}
 		for _, img := range r.Images {

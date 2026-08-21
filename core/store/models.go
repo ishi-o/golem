@@ -1,64 +1,52 @@
-// Package dao holds the domain models and the persistence contracts every
-// backend implements. spring-agent's one-model-per-record trick — a Java class
-// carrying @Entity, @Document and @RedisHash at once, correct because an
-// annotation whose type is absent at runtime is discarded on reflection — has
-// no Go equivalent: there is no compileOnly, and struct tags are inert data
-// with no runtime to drop them. The boundary therefore moves one level up, to
-// the module graph: these structs carry no mapping at all, and each
-// persistence module owns its own storage layout behind the repo interfaces
-// in repo.go. A consumer adds golem/core plus one backend and inherits no
-// driver belonging to the others.
+// Package store holds backend-neutral domain models and persistence contracts.
+// The models carry no database mapping tags. Each persistence module owns its
+// storage layout behind the interfaces in contracts.go, so an application can
+// select one adapter without adding the other database drivers.
 //
-// The structs stay anemic, one per record kind, with the id assigned by the
-// application — the same deliberate choice spring-agent documents on
-// ScheduledTask: a duplicate per-backend entity set plus mappers would be
-// pure overhead for records this plain.
-package dao
+// The structs are intentionally small and the application assigns their ids.
+package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
-// McpServerConfigCollection is the name every backend stores MCP server
-// configs under (a SQL table, a MongoDB collection, a Redis key prefix), so
-// the three schemas stay comparable at a glance. Each backend module imports
-// this constant rather than spelling its own.
-const McpServerConfigCollection = "mcp_servers"
-
-// McpServerConfigDefaultVersion is the clientInfo.version reported to an MCP
+// MCPServerConfigDefaultVersion is the clientInfo.version reported to an MCP
 // server when the config does not name one.
-const McpServerConfigDefaultVersion = "1.0.0"
+const MCPServerConfigDefaultVersion = "1.0.0"
 
 // SharedWithAll is a SharedWith entry meaning "every caller", not one
-// specific open_id or chat_id. FindAccessibleTo's identifiers argument only
+// specific open_id or chat_id. ListAccessibleTo's identifiers argument only
 // needs to include this value for a config carrying it to become visible to
 // everyone, on every backend: SharedWith is queried by plain equality or
 // membership, so this sentinel needs no query changes to work.
 const SharedWithAll = "*"
 
-// McpTransport is the MCP transport a server config names. SSE was dropped
+// MCPTransport is the MCP transport a server config names. SSE was dropped
 // (the upstream SDK deprecated it); only streamable HTTP remains, for now.
-type McpTransport string
+type MCPTransport string
 
-const McpTransportStreamableHTTP McpTransport = "STREAMABLE_HTTP"
+const MCPTransportStreamableHTTP MCPTransport = "STREAMABLE_HTTP"
 
-// McpServerConfig is an MCP server a user registered, plus who may reach it.
+// MCPServerConfig is an MCP server a user registered, plus who may reach it.
 //
 // The OwnerID+Name uniqueness is declared by the two backends that can enforce
 // it. Redis is not one of them — its index sets cannot express uniqueness — so
 // on that backend the constraint is advisory: saving twice under the same
 // owner and name with different ids yields two records rather than an error.
-// Callers reach servers through FindByOwnerIDAndName, which then returns an
+// Callers reach servers through GetByOwnerAndName, which then returns an
 // arbitrary one of them.
-type McpServerConfig struct {
+type MCPServerConfig struct {
 	// ID is assigned by the application, like every model here.
 	ID string
 
-	// OwnerID is indexed by FindByOwnerID and FindByOwnerIDAndName.
+	// OwnerID is indexed by ListByOwner and GetByOwnerAndName.
 	OwnerID string
 
 	// Name is indexed for the same queries; unique per owner (see above).
 	Name string
 
-	Transport McpTransport
+	Transport MCPTransport
 
 	URL string
 
@@ -72,7 +60,7 @@ type McpServerConfig struct {
 	Title string
 
 	// Version is reported to the MCP server as clientInfo.version; falls back
-	// to McpServerConfigDefaultVersion.
+	// to MCPServerConfigDefaultVersion.
 	Version string
 
 	Description string
@@ -85,21 +73,21 @@ type McpServerConfig struct {
 	// themselves.
 	//
 	// Indexed per element on Redis (one set per identifier), which is what
-	// lets that backend serve FindBySharedWithIn and FindAccessibleTo as
+	// lets that backend serve ListSharedWith and ListAccessibleTo as
 	// indexed reads rather than a scan of every stored server.
 	SharedWith []string
 }
 
-// McpServerConfigAccessIdentifiers returns every SharedWith value that
+// MCPServerConfigAccessIdentifiers returns every SharedWith value that
 // reaches the given caller: themselves, the chat they are writing from when
 // there is one, and SharedWithAll. Suitable as the identifiers argument of
-// both FindAccessibleTo and FindBySharedWithIn.
+// both ListAccessibleTo and ListSharedWith.
 //
 // Here rather than at either call site because there are two of them — the
 // lookup that gives a run its MCP tools, and the registry tool that tells the
 // user which servers they have — and a server reachable by one but invisible
 // to the other is a bug either way round.
-func McpServerConfigAccessIdentifiers(callerID, chatID string) []string {
+func MCPServerConfigAccessIdentifiers(callerID, chatID string) []string {
 	identifiers := make([]string, 0, 3)
 	identifiers = append(identifiers, callerID)
 	if chatID != "" {
@@ -108,9 +96,6 @@ func McpServerConfigAccessIdentifiers(callerID, chatID string) []string {
 	identifiers = append(identifiers, SharedWithAll)
 	return identifiers
 }
-
-// PendingQuestionCollection is the storage name for pending questions.
-const PendingQuestionCollection = "bot_pending_questions"
 
 // PendingQuestionStatus is the lifecycle state of a pending question.
 type PendingQuestionStatus string
@@ -133,7 +118,7 @@ type PendingQuestion struct {
 	ChatID   string
 	ChatType string
 
-	// ConversationID is indexed for FindByConversationIDAndStatus: a message
+	// ConversationID is indexed for ListByConversationAndStatus: a message
 	// arriving in the conversation supersedes whatever is still unanswered in
 	// it.
 	ConversationID string
@@ -152,7 +137,7 @@ type PendingQuestion struct {
 	QuestionsJSON string
 
 	// Status is indexed alongside ConversationID, and is the property the
-	// backends partially update — UpdateStatus, not a read-modify-write —
+	// backends partially update — SetStatus, not a read-modify-write —
 	// which keeps that index correct without rewriting the whole row.
 	Status PendingQuestionStatus
 
@@ -169,9 +154,6 @@ type PendingQuestion struct {
 	ExpiresAt time.Time
 }
 
-// PublishedResourceCollection is the storage name for published resources.
-const PublishedResourceCollection = "bot_published_resources"
-
 // Visibility is who a published resource may be reached by.
 type Visibility string
 
@@ -185,32 +167,13 @@ const (
 // as a plain 404 rather than a 400, so it stays a parser and not an error
 // source.
 func VisibilityFrom(value string) (Visibility, bool) {
-	// Case-insensitive like the Java enum's from(String).
+	// Match values case-insensitively so configuration is forgiving.
 	for _, v := range []Visibility{VisibilityInternal, VisibilityPublic} {
-		if equalFold(string(v), value) {
+		if strings.EqualFold(string(v), value) {
 			return v, true
 		}
 	}
 	return "", false
-}
-
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if 'A' <= ca && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if 'A' <= cb && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // PublishedResource is a file the agent published for a link to point at.
@@ -228,9 +191,6 @@ type PublishedResource struct {
 	ExpiresAt     time.Time
 }
 
-// ScheduledTaskCollection is the storage name for scheduled tasks.
-const ScheduledTaskCollection = "bot_scheduled_tasks"
-
 // ScheduledTaskStatus is the lifecycle state of a scheduled task.
 type ScheduledTaskStatus string
 
@@ -246,12 +206,12 @@ const (
 // On Redis, which has no query planner, an index is not a tuning decision but
 // the definition of which queries can be served at all: a property without
 // one cannot be filtered on. The indexed properties are exactly UserID and
-// Status — what FindByUserIDAndStatus and FindByStatus read — and each one is
+// Status — what ListByUserAndStatus and ListByStatus read — and each one is
 // a set that every write has to maintain, so nothing else carries one.
 type ScheduledTask struct {
 	ID string
 
-	// UserID is indexed for FindByUserIDAndStatus.
+	// UserID is indexed for ListByUserAndStatus.
 	UserID string
 
 	ChatID        string
@@ -282,14 +242,11 @@ type ScheduledTask struct {
 
 	// Status is stored as its name so the value matches what the other
 	// backends write and stays readable and stable if the enum is ever
-	// reordered. Indexed for FindByStatus and FindByUserIDAndStatus, and the
+	// reordered. Indexed for ListByStatus and ListByUserAndStatus, and the
 	// property the backends partially update — which is what keeps that
 	// index correct without rewriting the whole task.
 	Status ScheduledTaskStatus
 }
-
-// ProcessedMessageCollection is the storage name for processed messages.
-const ProcessedMessageCollection = "bot_processed_messages"
 
 // ProcessedMessage is a message that has already been taken up, so that being
 // handed it a second time does not answer it a second time.
@@ -311,12 +268,9 @@ type ProcessedMessage struct {
 	ID string
 
 	// CreatedAt is when it was claimed. The claim never expires against it —
-	// see ProcessedMessageRepo.Claim.
+	// see ProcessedMessageStore.Claim.
 	CreatedAt time.Time
 }
-
-// ShellCredentialCollection is the storage name for shell credentials.
-const ShellCredentialCollection = "shell_credentials"
 
 // ShellCredentialID derives the record id from owner and name. Id-equals-
 // owner-plus-name is what enforces the one-credential-per-name rule on the

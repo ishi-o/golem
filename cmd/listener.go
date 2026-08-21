@@ -12,7 +12,7 @@ type terminalListener struct {
 	output io.Writer
 }
 
-func (l terminalListener) OnStart(*agent.RunRegistry)         {}
+func (l terminalListener) OnStart(*agent.RunContext)          {}
 func (l terminalListener) OnSubscribe()                       {}
 func (l terminalListener) OnModel(string)                     {}
 func (l terminalListener) OnUsage(string, *schema.TokenUsage) {}
@@ -28,8 +28,8 @@ type listenerWithQuestions struct {
 	output io.Writer
 }
 
-func (l listenerWithQuestions) OnStart(registry *agent.RunRegistry) {
-	registry.AddQuestionHandler(terminalQuestions{input: l.input, output: l.output})
+func (l listenerWithQuestions) OnStart(run *agent.RunContext) {
+	run.AddQuestionHandler(terminalQuestions{input: l.input, output: l.output})
 }
 func (listenerWithQuestions) OnSubscribe()                       {}
 func (listenerWithQuestions) OnModel(string)                     {}

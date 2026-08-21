@@ -1,6 +1,6 @@
 # A profile per persistence backend, so the containers can never drift from
-# what the application itself selected — the same arrangement spring-agent
-# has. The app service is intentionally absent: Golem runs from source during
+# what the application itself selected. The app service is intentionally
+# absent: Golem runs from source during
 # development (`go run ./app`) and from whatever image the deployment builds.
 #
 #   docker compose --profile mongodb up

@@ -13,7 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
 )
 
@@ -21,13 +21,13 @@ import (
 // with the provider and excluded from ScheduledTaskScenario runs (see
 // agent.ScheduledTaskScenario) — a firing must not schedule more work.
 type Tools struct {
-	Service *TaskService
-	Repos   dao.Backend
+	service *TaskService
+	repos   store.Backend
 }
 
-// NewTools wires the schedule tools.
-func NewTools(service *TaskService, repos dao.Backend) *Tools {
-	return &Tools{Service: service, Repos: repos}
+// NewTools constructs the schedule tools.
+func NewTools(service *TaskService, repos store.Backend) *Tools {
+	return &Tools{service: service, repos: repos}
 }
 
 // List returns the tools, for provider registration.
@@ -62,14 +62,14 @@ func (t *Tools) Create() tool.InvokableTool {
 			if (in.Cron == "") == (in.ScheduledAt == "") {
 				return "", fmt.Errorf("set exactly one of cron and scheduledAt")
 			}
-			task := dao.ScheduledTask{
+			task := store.ScheduledTask{
 				ID:            newTaskID(),
 				UserID:        userID,
 				ChatID:        chatID,
 				ChatType:      chatType,
 				RootMessageID: rootMessageID,
 				TaskText:      in.TaskText,
-				Status:        dao.ScheduledTaskStatusActive,
+				Status:        store.ScheduledTaskStatusActive,
 			}
 			if in.Cron != "" {
 				normalized, err := normalizeCron(in.Cron)
@@ -90,7 +90,7 @@ func (t *Tools) Create() tool.InvokableTool {
 			switch in.Expiry {
 			case "", "never":
 				if in.Expiry == "" {
-					task.ExpiresAt = time.Now().Add(t.Service.Config.DefaultExpiry)
+					task.ExpiresAt = time.Now().Add(t.service.config.DefaultExpiry)
 				}
 			default:
 				d, err := time.ParseDuration(in.Expiry)
@@ -99,7 +99,7 @@ func (t *Tools) Create() tool.InvokableTool {
 				}
 				task.ExpiresAt = time.Now().Add(d)
 			}
-			if err := t.Service.Schedule(task); err != nil {
+			if err := t.service.Schedule(task); err != nil {
 				return "", err
 			}
 			return "scheduled task " + task.ID, nil
@@ -124,7 +124,7 @@ func (t *Tools) ListTasks() tool.InvokableTool {
 			if err != nil {
 				return output{}, err
 			}
-			active, err := t.Repos.ScheduledTasks().FindByUserIDAndStatus(ctx, userID, dao.ScheduledTaskStatusActive)
+			active, err := t.repos.ScheduledTasks().ListByUserAndStatus(ctx, userID, store.ScheduledTaskStatusActive)
 			if err != nil {
 				return output{}, err
 			}
@@ -153,12 +153,12 @@ func (t *Tools) Cancel() tool.InvokableTool {
 			if err != nil {
 				return "", err
 			}
-			task, err := t.Repos.ScheduledTasks().FindByID(ctx, in.TaskID)
+			task, err := t.repos.ScheduledTasks().Get(ctx, in.TaskID)
 			if err != nil || task == nil || task.UserID != userID {
 				return "", fmt.Errorf("no scheduled task %s owned by you", in.TaskID)
 			}
-			t.Service.Unschedule(in.TaskID)
-			if err := t.Repos.ScheduledTasks().UpdateStatus(ctx, in.TaskID, dao.ScheduledTaskStatusCancelled); err != nil {
+			t.service.Unschedule(in.TaskID)
+			if err := t.repos.ScheduledTasks().SetStatus(ctx, in.TaskID, store.ScheduledTaskStatusCancelled); err != nil {
 				return "", err
 			}
 			return "cancelled task " + in.TaskID, nil
@@ -169,10 +169,9 @@ func (t *Tools) Cancel() tool.InvokableTool {
 // rewrites: a */n in the minute field, or any seconds-looking prefix.
 var stepMinute = regexp.MustCompile(`^\*/(\d+)$`)
 
-// normalizeCron enforces the minimum interval spring-agent does: a task may
-// not fire more often than every five minutes. A model writing */1 or */2
-// in the minute field gets */5 rather than a refusal — the intent (recurring
-// check) survives; the load does not.
+// normalizeCron enforces a five-minute minimum interval: a task may not fire
+// more often than every five minutes. A model writing */1 or */2 in the
+// minute field gets */5 rather than a refusal.
 func normalizeCron(expr string) (string, error) {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {

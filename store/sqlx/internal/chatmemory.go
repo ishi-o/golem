@@ -1,4 +1,4 @@
-package sqlxstore
+package sqlx
 
 import (
 	"context"

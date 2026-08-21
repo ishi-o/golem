@@ -1,4 +1,4 @@
-package redisstore
+package redis
 
 import (
 	"context"
@@ -6,28 +6,28 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ishi-o/golem/core/dao"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/redis/go-redis/v9"
 )
 
 type mcpDocument struct {
-	ID          string            `json:"id"`
-	OwnerID     string            `json:"ownerId"`
-	Name        string            `json:"name"`
-	Transport   dao.McpTransport  `json:"transport"`
-	URL         string            `json:"url"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Title       string            `json:"title,omitempty"`
-	Version     string            `json:"version,omitempty"`
-	Description string            `json:"description,omitempty"`
-	WebsiteURL  string            `json:"websiteUrl,omitempty"`
-	Enabled     bool              `json:"enabled"`
-	SharedWith  []string          `json:"sharedWith,omitempty"`
+	ID          string             `json:"id"`
+	OwnerID     string             `json:"ownerId"`
+	Name        string             `json:"name"`
+	Transport   store.MCPTransport `json:"transport"`
+	URL         string             `json:"url"`
+	Headers     map[string]string  `json:"headers,omitempty"`
+	Title       string             `json:"title,omitempty"`
+	Version     string             `json:"version,omitempty"`
+	Description string             `json:"description,omitempty"`
+	WebsiteURL  string             `json:"websiteUrl,omitempty"`
+	Enabled     bool               `json:"enabled"`
+	SharedWith  []string           `json:"sharedWith,omitempty"`
 }
 
-func (s *Store) McpServerConfigs() dao.McpServerConfigRepo { return mcpRepo{s} }
+func (s *Store) MCPServerConfigs() store.MCPServerConfigStore { return mcpStore{s} }
 
-func (s *Store) saveMCP(ctx context.Context, value dao.McpServerConfig) error {
+func (s *Store) saveMCP(ctx context.Context, value store.MCPServerConfig) error {
 	var old mcpDocument
 	hasOld, err := s.get(ctx, s.record("mcp", value.ID), &old)
 	if err != nil {
@@ -64,8 +64,8 @@ func (s *Store) findMCPIDs(ctx context.Context, key string) ([]string, error) {
 	return ids, nil
 }
 
-func (s *Store) findMCPByIDs(ctx context.Context, ids []string) ([]dao.McpServerConfig, error) {
-	out := make([]dao.McpServerConfig, 0, len(ids))
+func (s *Store) findMCPByIDs(ctx context.Context, ids []string) ([]store.MCPServerConfig, error) {
+	out := make([]store.MCPServerConfig, 0, len(ids))
 	for _, id := range ids {
 		var document mcpDocument
 		found, err := s.get(ctx, s.record("mcp", id), &document)
@@ -75,7 +75,7 @@ func (s *Store) findMCPByIDs(ctx context.Context, ids []string) ([]dao.McpServer
 		if !found {
 			continue
 		}
-		out = append(out, dao.McpServerConfig{ID: document.ID, OwnerID: document.OwnerID, Name: document.Name, Transport: document.Transport, URL: document.URL, Headers: document.Headers, Title: document.Title, Version: document.Version, Description: document.Description, WebsiteURL: document.WebsiteURL, Enabled: document.Enabled, SharedWith: document.SharedWith})
+		out = append(out, store.MCPServerConfig{ID: document.ID, OwnerID: document.OwnerID, Name: document.Name, Transport: document.Transport, URL: document.URL, Headers: document.Headers, Title: document.Title, Version: document.Version, Description: document.Description, WebsiteURL: document.WebsiteURL, Enabled: document.Enabled, SharedWith: document.SharedWith})
 	}
 	return out, nil
 }
@@ -94,9 +94,9 @@ type pendingDocument struct {
 	ExpiresAt      time.Time `json:"expiresAt,omitempty"`
 }
 
-func (s *Store) PendingQuestions() dao.PendingQuestionRepo { return pendingRepo{s} }
+func (s *Store) PendingQuestions() store.PendingQuestionStore { return pendingStore{s} }
 
-func (s *Store) savePending(ctx context.Context, value dao.PendingQuestion) error {
+func (s *Store) savePending(ctx context.Context, value store.PendingQuestion) error {
 	var old pendingDocument
 	hasOld, err := s.get(ctx, s.record("pending", value.ID), &old)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *Store) savePending(ctx context.Context, value dao.PendingQuestion) erro
 	})
 }
 
-func (s *Store) findPendingIDs(ctx context.Context, conversationID string, status dao.PendingQuestionStatus) ([]string, error) {
+func (s *Store) findPendingIDs(ctx context.Context, conversationID string, status store.PendingQuestionStatus) ([]string, error) {
 	ids, err := s.client.SMembers(ctx, s.index("pending-conversation-status", conversationID+"\x00"+string(status))).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis store: read pending index: %w", err)
@@ -125,7 +125,7 @@ func (s *Store) findPendingIDs(ctx context.Context, conversationID string, statu
 	return ids, nil
 }
 
-func (s *Store) getPending(ctx context.Context, id string) (*dao.PendingQuestion, error) {
+func (s *Store) getPending(ctx context.Context, id string) (*store.PendingQuestion, error) {
 	var document pendingDocument
 	found, err := s.get(ctx, s.record("pending", id), &document)
 	if err != nil || !found {
@@ -135,8 +135,8 @@ func (s *Store) getPending(ctx context.Context, id string) (*dao.PendingQuestion
 	return &value, nil
 }
 
-func pendingValue(document pendingDocument) dao.PendingQuestion {
-	return dao.PendingQuestion{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, ConversationID: document.ConversationID, RootMessageID: document.RootMessageID, CardID: document.CardID, QuestionsJSON: document.QuestionsJSON, Status: dao.PendingQuestionStatus(document.Status), CreatedAt: document.CreatedAt, ExpiresAt: document.ExpiresAt}
+func pendingValue(document pendingDocument) store.PendingQuestion {
+	return store.PendingQuestion{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, ConversationID: document.ConversationID, RootMessageID: document.RootMessageID, CardID: document.CardID, QuestionsJSON: document.QuestionsJSON, Status: store.PendingQuestionStatus(document.Status), CreatedAt: document.CreatedAt, ExpiresAt: document.ExpiresAt}
 }
 
 type resourceDocument struct {
@@ -148,20 +148,20 @@ type resourceDocument struct {
 	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 }
 
-func (s *Store) PublishedResources() dao.PublishedResourceRepo { return resourceRepo{s} }
+func (s *Store) PublishedResources() store.PublishedResourceStore { return resourceStore{s} }
 
-func (s *Store) saveResource(ctx context.Context, value dao.PublishedResource) error {
+func (s *Store) saveResource(ctx context.Context, value store.PublishedResource) error {
 	document := resourceDocument{ID: value.ID, OwnerID: value.OwnerID, Visibility: string(value.Visibility), Directory: value.Directory, EntryFilename: value.EntryFilename, ExpiresAt: value.ExpiresAt}
 	return s.setJSONDirect(ctx, s.record("resource", value.ID), document)
 }
 
-func (s *Store) findResource(ctx context.Context, id string) (*dao.PublishedResource, error) {
+func (s *Store) findResource(ctx context.Context, id string) (*store.PublishedResource, error) {
 	var document resourceDocument
 	found, err := s.get(ctx, s.record("resource", id), &document)
 	if err != nil || !found {
 		return nil, err
 	}
-	return &dao.PublishedResource{ID: document.ID, OwnerID: document.OwnerID, Visibility: dao.Visibility(document.Visibility), Directory: document.Directory, EntryFilename: document.EntryFilename, ExpiresAt: document.ExpiresAt}, nil
+	return &store.PublishedResource{ID: document.ID, OwnerID: document.OwnerID, Visibility: store.Visibility(document.Visibility), Directory: document.Directory, EntryFilename: document.EntryFilename, ExpiresAt: document.ExpiresAt}, nil
 }
 
 type taskDocument struct {
@@ -178,9 +178,9 @@ type taskDocument struct {
 	Status         string    `json:"status"`
 }
 
-func (s *Store) ScheduledTasks() dao.ScheduledTaskRepo { return taskRepo{s} }
+func (s *Store) ScheduledTasks() store.ScheduledTaskStore { return taskStore{s} }
 
-func (s *Store) saveTask(ctx context.Context, value dao.ScheduledTask) error {
+func (s *Store) saveTask(ctx context.Context, value store.ScheduledTask) error {
 	var old taskDocument
 	hasOld, err := s.get(ctx, s.record("task", value.ID), &old)
 	if err != nil {
@@ -202,8 +202,8 @@ func (s *Store) saveTask(ctx context.Context, value dao.ScheduledTask) error {
 	})
 }
 
-func (s *Store) getTasks(ctx context.Context, ids []string) ([]dao.ScheduledTask, error) {
-	out := make([]dao.ScheduledTask, 0, len(ids))
+func (s *Store) getTasks(ctx context.Context, ids []string) ([]store.ScheduledTask, error) {
+	out := make([]store.ScheduledTask, 0, len(ids))
 	for _, id := range ids {
 		var document taskDocument
 		found, err := s.get(ctx, s.record("task", id), &document)
@@ -211,7 +211,7 @@ func (s *Store) getTasks(ctx context.Context, ids []string) ([]dao.ScheduledTask
 			return nil, err
 		}
 		if found {
-			out = append(out, dao.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, Background: document.Background, Status: dao.ScheduledTaskStatus(document.Status)})
+			out = append(out, store.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, Background: document.Background, Status: store.ScheduledTaskStatus(document.Status)})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -225,21 +225,21 @@ type credentialDocument struct {
 	Value   string `json:"value,omitempty"`
 }
 
-func (s *Store) ShellCredentials() dao.ShellCredentialRepo { return credentialRepo{s} }
+func (s *Store) ShellCredentials() store.ShellCredentialStore { return credentialStore{s} }
 
-func (s *Store) saveCredential(ctx context.Context, value dao.ShellCredential) error {
-	value.ID = dao.ShellCredentialID(value.OwnerID, value.Name)
+func (s *Store) saveCredential(ctx context.Context, value store.ShellCredential) error {
+	value.ID = store.ShellCredentialID(value.OwnerID, value.Name)
 	document := credentialDocument{ID: value.ID, OwnerID: value.OwnerID, Name: value.Name, Value: value.Value}
 	return s.setJSONDirect(ctx, s.record("credential", value.ID), document)
 }
 
-func (s *Store) findCredentials(ctx context.Context, ownerID string) ([]dao.ShellCredential, error) {
+func (s *Store) findCredentials(ctx context.Context, ownerID string) ([]store.ShellCredential, error) {
 	ids, err := s.client.SMembers(ctx, s.index("credential-owner", ownerID)).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis store: read credential index: %w", err)
 	}
 	sort.Strings(ids)
-	out := make([]dao.ShellCredential, 0, len(ids))
+	out := make([]store.ShellCredential, 0, len(ids))
 	for _, id := range ids {
 		var document credentialDocument
 		found, err := s.get(ctx, s.record("credential", id), &document)
@@ -247,14 +247,14 @@ func (s *Store) findCredentials(ctx context.Context, ownerID string) ([]dao.Shel
 			return nil, err
 		}
 		if found {
-			out = append(out, dao.ShellCredential{ID: document.ID, OwnerID: document.OwnerID, Name: document.Name, Value: document.Value})
+			out = append(out, store.ShellCredential{ID: document.ID, OwnerID: document.OwnerID, Name: document.Name, Value: document.Value})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-func (s *Store) ProcessedMessages() dao.ProcessedMessageRepo { return processedRepo{s} }
+func (s *Store) ProcessedMessages() store.ProcessedMessageStore { return processedStore{s} }
 
 func (s *Store) claim(ctx context.Context, id string) (bool, error) {
 	ok, err := s.client.SetNX(ctx, s.record("processed", id), time.Now().UTC().Format(time.RFC3339Nano), 0).Result()
