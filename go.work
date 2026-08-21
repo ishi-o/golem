@@ -1,10 +1,8 @@
-// One module per spring-agent Gradle module, and for the same reason: a
-// consumer adds golem/core and one persistence module, and inherits no driver
-// belonging to the others. In Java that isolation was compileOnly plus a build
-// task (checkRuntimeClasspathIsolation) policing the runtime classpath; Go has
-// no compileOnly and links statically, so the only honest equivalent is a
-// module boundary. If a driver were required here, every consumer of any
-// golem module would download it, and a backend's types would leak into core.
+// One module per deployable or replaceable part keeps the public core free of
+// database and HTTP drivers. A consumer adds golem/core and one
+// store module, and inherits no driver belonging to the others.
+// Go has no compileOnly and links statically, so the module boundary is the
+// honest equivalent of spring-agent's runtime-classpath isolation check.
 //
 // go.work exists for development inside this repository only. It is ignored
 // when another module requires a published golem module, so local paths here
@@ -13,10 +11,27 @@ go 1.26
 
 use (
 	./app
-	./cli
+	./cmd
+	./connector/feishu
 	./core
-	./integration/feishu
-	./persistence/mongodb
-	./persistence/redis
-	./persistence/sqlx
+	./internal
+	./store/mongodb
+	./store/redis
+	./store/sqlx
+	./test
 )
+
+// The individual go.mod files keep real published module requirements. These
+// local replaces make the workspace test those modules against the checkout
+// without teaching downstream consumers to use repository-relative paths.
+replace github.com/ishi-o/golem/core v0.0.0 => ./core
+
+replace github.com/ishi-o/golem/connector/feishu v0.0.0 => ./connector/feishu
+
+replace github.com/ishi-o/golem/internal v0.0.0 => ./internal
+
+replace github.com/ishi-o/golem/store/sqlx v0.0.0 => ./store/sqlx
+
+replace github.com/ishi-o/golem/store/mongodb v0.0.0 => ./store/mongodb
+
+replace github.com/ishi-o/golem/store/redis v0.0.0 => ./store/redis

@@ -294,6 +294,6 @@ func envDuration(name string) time.Duration {
 // here, which is itself a property worth keeping — secrets belong to model
 // clients and credential stores, not to the runtime config.
 func (c Config) String() string {
-	return fmt.Sprintf("config{locale=%s storage=%s admins=%d guideThreshold=%d askTTL=%s",
+	return fmt.Sprintf("config{locale=%s storage=%s admins=%d guideThreshold=%d askTTL=%s}",
 		c.Locale, c.Storage.Location, len(c.AI.Admins), c.AI.GuideThreshold, c.AI.Tools.AskUserQuestion.TTL)
 }

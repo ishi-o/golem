@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -33,6 +34,7 @@ type Provider struct {
 	// Interceptors wrap every tool the run offers; the large response
 	// interceptor is added by NewProvider from the config.
 	Interceptors []Interceptor
+	Log          *slog.Logger
 
 	mu         sync.Mutex
 	registered []RegisteredTool
@@ -63,11 +65,16 @@ type MCPTools struct {
 
 // NewProvider wires the provider and adds the built-in interceptor.
 func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos dao.Backend, mcp MCPBuilder) *Provider {
+	_ = cfg.Normalize()
+	if workspaces == nil {
+		workspaces = storage.NewWorkspaceFactory(cfg.Storage.Location)
+	}
 	return &Provider{
 		Config:     cfg,
 		Workspaces: workspaces,
 		Repos:      repos,
 		MCP:        mcp,
+		Log:        slog.Default(),
 		Interceptors: []Interceptor{
 			&LargeResponseInterceptor{
 				GuideThreshold: cfg.AI.GuideThreshold,
@@ -80,6 +87,9 @@ func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos 
 // Register makes a tool available to runs. Call it during wiring, before
 // the first Fire; offers gates it by scenario (see RegisteredTool).
 func (p *Provider) Register(t tool.InvokableTool, offers func(name string) bool) {
+	if t == nil {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.registered = append(p.registered, RegisteredTool{Tool: t, Offers: offers})
@@ -117,6 +127,12 @@ type Composition struct {
 // sees no acknowledgement concludes its event was lost and sends it again —
 // the reason spring-agent subscribed on boundedElastic).
 func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Composition, error) {
+	if p == nil {
+		return nil, fmt.Errorf("golem/tools: nil provider")
+	}
+	if p.Workspaces == nil {
+		p.Workspaces = storage.NewWorkspaceFactory(p.Config.Storage.Location)
+	}
 	var tools []tool.InvokableTool
 
 	home := p.Workspaces.ForOwner(req.UserID)
@@ -192,12 +208,12 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 				inner()
 				if closer != nil {
 					if err := closer.Close(); err != nil {
-						fmt.Printf("golem: closing mcp tools: %v\n", err)
+						p.logger().Error("closing MCP tools failed", "err", err)
 					}
 				}
 			}
 		} else if err != nil {
-			fmt.Printf("golem: mcp tools unavailable for this run: %v\n", err)
+			p.logger().Warn("MCP tools unavailable for this run", "err", err)
 		}
 	}
 
@@ -205,13 +221,24 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	comp.Tools = make([]tool.InvokableTool, 0, len(tools))
 	comp.Info = make([]*schema.ToolInfo, 0, len(tools))
 	for _, t := range tools {
+		if t == nil {
+			continue
+		}
 		wrapped := WrapTool(t, p.Interceptors...)
 		info, err := wrapped.Info(ctx)
 		if err != nil {
+			comp.Close()
 			return nil, fmt.Errorf("tool info: %w", err)
 		}
 		comp.Tools = append(comp.Tools, wrapped)
 		comp.Info = append(comp.Info, info)
 	}
 	return comp, nil
+}
+
+func (p *Provider) logger() *slog.Logger {
+	if p.Log != nil {
+		return p.Log
+	}
+	return slog.Default()
 }

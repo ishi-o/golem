@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -108,11 +110,16 @@ func (w *intercepted) InvokableRun(ctx context.Context, argumentsInJSON string, 
 const endTurnPrefix = "\x00golem:end-turn\x00"
 
 // SplitEndTurn reports whether a tool result carries the end-turn sentinel,
-// returning the result without it. Exported for the agent's tool executor,
-// the one caller outside the interceptor chain.
+// returning the result without it. InferTool JSON-encodes a string result, so
+// this accepts both the raw form produced by a custom tool and the JSON string
+// form produced by Eino's typed tool helper.
 func SplitEndTurn(result string) (string, bool) {
-	if len(result) > len(endTurnPrefix) && result[:len(endTurnPrefix)] == endTurnPrefix {
+	if strings.HasPrefix(result, endTurnPrefix) {
 		return result[len(endTurnPrefix):], true
+	}
+	var decoded string
+	if json.Unmarshal([]byte(result), &decoded) == nil && strings.HasPrefix(decoded, endTurnPrefix) {
+		return decoded[len(endTurnPrefix):], true
 	}
 	return result, false
 }

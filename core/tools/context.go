@@ -14,35 +14,39 @@ import "context"
 
 // Key is a typed context key. The zero Key is not usable; construct with
 // NewKey, package-level, next to the type it names.
-type Key[T any] struct{ name string }
-
-// NewKey names a typed context key. The name appears in error messages; it
-// does not have to be unique across types, but a collision on (name, type)
-// is a silent aliasing bug, so prefer one key per name.
-func NewKey[T any](name string) Key[T] { return Key[T]{name: name} }
-
-type holder struct {
-	name  string
-	value any
+type Key[T any] struct {
+	name string
+	id   *keyID
 }
+
+// keyID is deliberately allocated once per key. Using a single empty struct
+// as the context key would make every identity value overwrite every other
+// one, because context compares keys by equality rather than by their
+// generic type parameter.
+type keyID struct{}
+
+// NewKey names a typed context key. Each call creates an independent key; the
+// name appears only in error messages and should still describe one concept.
+func NewKey[T any](name string) Key[T] { return Key[T]{name: name, id: &keyID{}} }
 
 // With returns a context carrying value under this key.
 func (k Key[T]) With(ctx context.Context, value T) context.Context {
-	return context.WithValue(ctx, holder{}, holder{name: k.name, value: value})
+	if k.id == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, k.id, value)
 }
 
-// Get reads the value. A value stored under the same name with a different
-// type — a registration mistake, not a runtime condition — is an error
-// rather than a silent zero.
+// Get reads the value. A missing value is reported as a zero value and nil
+// error; Require is the convenience for tools that need a non-empty value.
 func (k Key[T]) Get(ctx context.Context) (T, error) {
 	var zero T
-	h, ok := ctx.Value(holder{}).(holder)
-	if !ok || h.name != k.name {
+	if k.id == nil {
 		return zero, nil
 	}
-	v, ok := h.value.(T)
+	v, ok := ctx.Value(k.id).(T)
 	if !ok {
-		return zero, &TypeMismatchError{key: k.name, want: h.value}
+		return zero, nil
 	}
 	return v, nil
 }

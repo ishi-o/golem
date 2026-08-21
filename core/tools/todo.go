@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -59,7 +60,7 @@ func fanOutTodos(handlers []TodoEventHandler) TodoEventHandler {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						fmt.Printf("golem: todo handler panicked: %v\n", r)
+						slog.Default().Error("todo handler panicked", "panic", r)
 					}
 				}()
 				h(ctx, event)

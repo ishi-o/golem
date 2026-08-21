@@ -48,6 +48,10 @@ func NewHandler(repos dao.PublishedResourceRepo, store storage.Storage, log *slo
 // router must leave the sub-path unconsumed after the token; this handler
 // reads it from the remaining URL path.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Repos == nil || h.Storage == nil {
+		http.Error(w, "share service is not configured", http.StatusServiceUnavailable)
+		return
+	}
 	// The remaining path after /share/: split into visibility, userId,
 	// token, and whatever sub-path follows.
 	rest := strings.TrimPrefix(r.URL.Path, "/")
@@ -57,6 +61,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	visibilityRaw, userID, token := parts[0], parts[1], parts[2]
+	if !safePathComponent(userID) || !safePathComponent(token) {
+		http.NotFound(w, r)
+		return
+	}
 	subPath := ""
 	if len(parts) == 4 {
 		subPath = parts[3]
@@ -103,6 +111,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			filename = subPath
 		}
+	} else if subPath != "" {
+		http.NotFound(w, r)
+		return
+	}
+	filename, ok = safeRelativePath(filename)
+	if !ok || filename == "" {
+		http.NotFound(w, r)
+		return
 	}
 
 	storageKey := path.Join(visibilityDir, userID, token, filename)
@@ -132,4 +148,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeFile(w, r, resolved)
+}
+
+func safePathComponent(value string) bool {
+	return value != "" && value != "." && value != ".." &&
+		!strings.ContainsAny(value, `/\\`) && path.Clean(value) == value
+}
+
+func safeRelativePath(value string) (string, bool) {
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, `\`) {
+		return "", false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == ".." {
+			return "", false
+		}
+	}
+	clean := path.Clean(value)
+	if clean == "." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
 }

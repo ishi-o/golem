@@ -25,14 +25,14 @@ import (
 // spring-agent's SpringAgent. Fire and Cancel are the whole public surface;
 // everything else is wiring fields.
 //
-// The run loop is hand-rolled over eino's ChatModel rather than eino's
+// The run loop is hand-rolled over eino's ToolCallingChatModel rather than eino's
 // canned react agent, for the same reason SpringAgent drives a ChatClient
 // instead of Spring AI's ChatAgent: the runtime's semantics — accumulated
 // content callbacks, cancellation between chunks, the interceptor chain, the
 // ask tool's turn-ending sentinel, tool messages persisted to memory — are
 // all things a canned loop either hides or re-decides.
 type Agent struct {
-	Model    model.ChatModel
+	Model    model.ToolCallingChatModel
 	Memory   chatmemory.Repository
 	Provider *tools.Provider
 	// Repos supplies the pending-question repo the outstanding-ask guard
@@ -61,8 +61,10 @@ type Agent struct {
 }
 
 // New wires an Agent and starts accepting runs.
-func New(m model.ChatModel, mem chatmemory.Repository, provider *tools.Provider, cfg config.Config) *Agent {
+func New(m model.ToolCallingChatModel, mem chatmemory.Repository, provider *tools.Provider, cfg config.Config) *Agent {
+	_ = cfg.Normalize()
 	a := &Agent{Model: m, Memory: mem, Provider: provider, Config: cfg, Log: slog.Default(), cancels: map[string]context.CancelFunc{}}
+	a.Messages = i18n.New(cfg.Locale, a.Log)
 	a.accepting.Store(true)
 	return a
 }
@@ -79,7 +81,13 @@ func (a *Agent) Fire(req Request) error {
 	if req.Scenario == nil {
 		return fmt.Errorf("golem: request has no scenario")
 	}
-	go a.run(req)
+	ready := make(chan struct{})
+	go a.run(req, ready)
+	// Fire remains non-blocking with respect to model and tool work, but it
+	// does not return before a request id can be cancelled. Without this
+	// small handshake a caller could receive nil and immediately lose a
+	// Cancel race against the new run's goroutine.
+	<-ready
 	return nil
 }
 
@@ -166,7 +174,7 @@ func safeShouldContinue(a *Agent, l ResponseListener) (ok bool) {
 // run executes one run on its own goroutine. Every exit path flows through
 // the deferred finish so OnFinished fires exactly once and the composition's
 // MCP connections close whatever the run ended by.
-func (a *Agent) run(req Request) {
+func (a *Agent) run(req Request, ready chan<- struct{}) {
 	a.inFlight.Add(1)
 	defer a.inFlight.Add(-1)
 
@@ -184,6 +192,7 @@ func (a *Agent) run(req Request) {
 			a.mu.Unlock()
 		}()
 	}
+	close(ready)
 
 	registry := &RunRegistry{request: req}
 	state := &runState{a: a, listeners: append(append([]ResponseListener(nil), a.DeclaredListeners...), req.Listeners...)}
@@ -199,6 +208,10 @@ func (a *Agent) run(req Request) {
 		if composition != nil && composition.Close != nil {
 			composition.Close()
 		}
+	}
+	if a.Model == nil {
+		finish(OutcomeFailed, fmt.Errorf("golem: no chat model configured"))
+		return
 	}
 
 	// onStart is where the registry fills; extra listeners join before any
@@ -229,6 +242,10 @@ func (a *Agent) run(req Request) {
 
 	todoFan := tools.TodoFanOut(append(append([]tools.TodoEventHandler(nil), req.TodoHandlers...), registry.todoEventHandlers()...))
 
+	if a.Provider == nil {
+		finish(OutcomeFailed, fmt.Errorf("golem: no tools provider configured"))
+		return
+	}
 	composition, err := a.Provider.Compose(runCtx, tools.ComposeRequest{
 		ScenarioOffers:     req.Scenario.Offers,
 		UserID:             req.UserID,
@@ -241,6 +258,11 @@ func (a *Agent) run(req Request) {
 	})
 	if err != nil {
 		finish(OutcomeFailed, fmt.Errorf("composing tools: %w", err))
+		return
+	}
+	modelWithTools, err := a.Model.WithTools(composition.Info)
+	if err != nil {
+		finish(OutcomeFailed, fmt.Errorf("binding tools: %w", err))
 		return
 	}
 
@@ -273,8 +295,12 @@ func (a *Agent) run(req Request) {
 			cancelled = true
 			break
 		}
-		reader, err := a.Model.Stream(runCtx, messages, model.WithTools(composition.Info))
+		reader, err := modelWithTools.Stream(runCtx, messages)
 		if err != nil {
+			if runCtx.Err() != nil {
+				finish(OutcomeCancelled, nil)
+				return
+			}
 			finish(OutcomeFailed, fmt.Errorf("model stream: %w", err))
 			return
 		}
@@ -286,6 +312,10 @@ func (a *Agent) run(req Request) {
 			}
 			if err != nil {
 				reader.Close()
+				if runCtx.Err() != nil {
+					finish(OutcomeCancelled, nil)
+					return
+				}
 				finish(OutcomeFailed, fmt.Errorf("model stream: %w", err))
 				return
 			}
@@ -333,6 +363,10 @@ func (a *Agent) run(req Request) {
 		for _, call := range assistant.ToolCalls {
 			result, endTurn, err := a.executeTool(runCtx, composition, call)
 			if err != nil {
+				if runCtx.Err() != nil {
+					finish(OutcomeCancelled, nil)
+					return
+				}
 				result, endTurn = fmt.Sprintf("tool error: %v", err), false
 			}
 			toolMsg := &schema.Message{Role: schema.Tool, ToolCallID: call.ID, ToolName: call.Function.Name, Content: result}

@@ -1,6 +1,6 @@
-// Package scheduling fires the tasks the model scheduled: a minimal cron
+// Package service fires the tasks the model scheduled: a minimal cron
 // parser, the scheduler service, and the schedule tools.
-package scheduling
+package service
 
 import (
 	"fmt"
@@ -27,7 +27,7 @@ func ParseCron(expr string) (Cron, error) {
 		return Cron{}, fmt.Errorf("cron %q must have 5 fields (minute hour day-of-month month day-of-week)", expr)
 	}
 	var sets [5]uint32
-	bounds := [5][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
+	bounds := [5][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
 	for i, f := range fields {
 		s, err := parseField(f, bounds[i][0], bounds[i][1])
 		if err != nil {

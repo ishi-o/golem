@@ -1,8 +1,8 @@
-# The three commands used every day, mirroring spring-agent's Makefile. The
-# module walk is what go.work buys: one `go build ./...` per module from the
-# root, without -C flags or a script.
+# The module walk is what go.work buys: one build/test per module from the
+# root. Keeping it explicit makes an adapter's dependency boundary visible in
+# the same place as the module list.
 
-MODULES := core persistence/sqlx persistence/mongodb persistence/redis integration/feishu app cli
+MODULES := core internal store/sqlx store/mongodb store/redis connector/feishu app cmd test
 
 .DEFAULT_GOAL := build
 
