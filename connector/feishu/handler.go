@@ -17,6 +17,9 @@ import (
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/tools"
+	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
+	larkcallback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
+	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
 // Handler receives Feishu event callbacks and turns message events into core
@@ -56,60 +59,37 @@ type MessageEvent struct {
 	Text            string
 }
 
-type callbackEnvelope struct {
-	Type      string `json:"type"`
-	Token     string `json:"token"`
-	Challenge string `json:"challenge"`
-	Header    struct {
-		EventID   string `json:"event_id"`
-		EventType string `json:"event_type"`
-		Token     string `json:"token"`
-	} `json:"header"`
-	Event struct {
-		Sender struct {
-			SenderID struct {
-				OpenID string `json:"open_id"`
-				UserID string `json:"user_id"`
-			} `json:"sender_id"`
-		} `json:"sender"`
-		Message struct {
-			MessageID   string `json:"message_id"`
-			RootID      string `json:"root_id"`
-			ParentID    string `json:"parent_id"`
-			ChatID      string `json:"chat_id"`
-			ChatType    string `json:"chat_type"`
-			MessageType string `json:"message_type"`
-			Content     string `json:"content"`
-		} `json:"message"`
-		Action struct {
-			Value map[string]any `json:"value"`
-		} `json:"action"`
-		Operator struct {
-			OpenID string `json:"open_id"`
-			UserID string `json:"user_id"`
-		} `json:"operator"`
-	} `json:"event"`
-}
-
 // DecodeMessageEvent decodes a Feishu v2 message callback.
 func DecodeMessageEvent(data []byte) (MessageEvent, error) {
-	var envelope callbackEnvelope
+	var envelope larkim.P2MessageReceiveV1
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return MessageEvent{}, fmt.Errorf("feishu: decode event: %w", err)
 	}
-	content := struct {
-		Text string `json:"text"`
-	}{}
-	if envelope.Event.Message.Content != "" {
-		if err := json.Unmarshal([]byte(envelope.Event.Message.Content), &content); err != nil {
-			content.Text = envelope.Event.Message.Content
-		}
+	if envelope.Event == nil || envelope.Event.Message == nil {
+		return MessageEvent{}, errors.New("feishu: message event has no message")
 	}
-	userID := envelope.Event.Sender.SenderID.OpenID
-	if userID == "" {
-		userID = envelope.Event.Sender.SenderID.UserID
+	message := envelope.Event.Message
+	eventID := ""
+	if envelope.EventV2Base != nil && envelope.EventV2Base.Header != nil {
+		eventID = envelope.EventV2Base.Header.EventID
 	}
-	return MessageEvent{EventID: firstNonEmpty(envelope.Header.EventID, envelope.Event.Message.MessageID), MessageID: envelope.Event.Message.MessageID, UserID: userID, ChatID: envelope.Event.Message.ChatID, ChatType: firstNonEmpty(envelope.Event.Message.ChatType, "p2p"), RootMessageID: envelope.Event.Message.RootID, ParentMessageID: envelope.Event.Message.ParentID, Text: strings.TrimSpace(content.Text)}, nil
+	userID := ""
+	if envelope.Event.Sender != nil && envelope.Event.Sender.SenderId != nil {
+		userID = firstNonEmpty(
+			valueString(envelope.Event.Sender.SenderId.OpenId),
+			valueString(envelope.Event.Sender.SenderId.UserId),
+		)
+	}
+	return MessageEvent{
+		EventID:         firstNonEmpty(eventID, valueString(message.MessageId)),
+		MessageID:       valueString(message.MessageId),
+		UserID:          userID,
+		ChatID:          valueString(message.ChatId),
+		ChatType:        firstNonEmpty(valueString(message.ChatType), "p2p"),
+		RootMessageID:   valueString(message.RootId),
+		ParentMessageID: valueString(message.ParentId),
+		Text:            decodeMessageText(valueString(message.Content)),
+	}, nil
 }
 
 // ServeHTTP handles URL verification, message receive events, and card action
@@ -121,12 +101,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	var envelope callbackEnvelope
+	var envelope larkevent.EventFuzzy
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		http.Error(w, "invalid event", http.StatusBadRequest)
 		return
 	}
-	token := firstNonEmpty(envelope.Token, envelope.Header.Token)
+	eventType := ""
+	token := envelope.Token
+	if envelope.Header != nil {
+		eventType = envelope.Header.EventType
+		token = firstNonEmpty(token, envelope.Header.Token)
+	}
 	if h.VerificationToken != "" && token != h.VerificationToken {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
@@ -135,9 +120,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"challenge": envelope.Challenge})
 		return
 	}
-	if strings.Contains(envelope.Header.EventType, "card.action") || envelope.Event.Action.Value != nil {
-		actorID := firstNonEmpty(envelope.Event.Operator.OpenID, envelope.Event.Operator.UserID)
-		if err := h.handleAction(r.Context(), envelope.Event.Action.Value, actorID); err != nil {
+	if strings.Contains(eventType, "card.action") {
+		var actionEvent larkcallback.CardActionTriggerEvent
+		if err := json.Unmarshal(data, &actionEvent); err != nil {
+			http.Error(w, "invalid action", http.StatusBadRequest)
+			return
+		}
+		var actionValue map[string]any
+		var actorID string
+		if actionEvent.Event != nil {
+			if actionEvent.Event.Action != nil {
+				actionValue = actionEvent.Event.Action.Value
+			}
+			if actionEvent.Event.Operator != nil {
+				actorID = firstNonEmpty(actionEvent.Event.Operator.OpenID, valueString(actionEvent.Event.Operator.UserID))
+			}
+		}
+		if err := h.handleAction(r.Context(), actionValue, actorID); err != nil {
 			h.Logger.Error("Feishu card action failed", "err", err)
 			http.Error(w, "action failed", http.StatusBadRequest)
 			return
@@ -145,7 +144,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
-	if envelope.Header.EventType != "" && envelope.Header.EventType != "im.message.receive_v1" {
+	if eventType != "" && eventType != "im.message.receive_v1" {
 		writeJSON(w, http.StatusOK, map[string]bool{"ignored": true})
 		return
 	}
@@ -348,6 +347,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func valueString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func decodeMessageText(content string) string {
+	if content == "" {
+		return ""
+	}
+	var message struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(content), &message); err != nil {
+		return strings.TrimSpace(content)
+	}
+	return strings.TrimSpace(message.Text)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
