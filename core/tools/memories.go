@@ -15,10 +15,8 @@ import (
 )
 
 // MemoryTools are the agent's persistent notes about a user, kept in the
-// memories folder of their home — the Go port of spring-agent's memory
-// advisor. The default system prompt's first working rule sends the model to
-// MemoryView("MEMORY.md") before replying, so a run continues where the last
-// one left off without the conversation history having to say so.
+// memories folder of their home. The default system prompt asks the model to
+// read MEMORY.md before replying, so memory remains an ordinary file tool.
 type MemoryTools struct {
 	dir string
 }
@@ -105,8 +103,7 @@ func (m *MemoryTools) Write() tool.InvokableTool {
 
 // SkillTools are the user's skill files: directories under skills/, each
 // with a SKILL.md describing what it is for. Read-only view plus management,
-// the two halves spring-agent split between SkillsTool and
-// SkillManagementTools.
+// the read and management operations for user-owned skills.
 type SkillTools struct {
 	dir string
 }

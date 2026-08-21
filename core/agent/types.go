@@ -82,7 +82,7 @@ func (s *scheduledTaskScenario) Offers(toolName string) bool {
 // surface replaces what it shows, it does not append, so deltas would make
 // every surface do its own accumulation and get it subtly wrong.
 type ResponseListener interface {
-	OnStart(registry *RunRegistry)
+	OnStart(run *RunContext)
 	OnSubscribe()
 	OnModel(model string)
 	OnContent(contentSoFar string)
@@ -90,7 +90,7 @@ type ResponseListener interface {
 	OnError(err error)
 	// OnFinished is called exactly once, whatever the run ended by.
 	OnFinished(outcome Outcome)
-	// ShouldContinue is polled between chunks; false ends the run as
+	// ShouldContinue is polled between model iterations; false ends the run as
 	// cancelled. It is how a surface that stopped listening (a closed card,
 	// say) stops the work that was feeding it.
 	ShouldContinue() bool
@@ -100,76 +100,76 @@ type ResponseListener interface {
 // listener that observes nothing and always continues — embed it and fill
 // the hooks a surface needs.
 type ListenerFuncs struct {
-	OnStartF     func(registry *RunRegistry)
-	OnSubscribeF func()
-	OnModelF     func(model string)
-	OnContentF   func(contentSoFar string)
-	OnUsageF     func(model string, usage *schema.TokenUsage)
-	OnErrorF     func(err error)
-	OnFinishedF  func(outcome Outcome)
-	// ShouldContinueF nil means always continue.
-	ShouldContinueF func() bool
+	OnStartFunc     func(run *RunContext)
+	OnSubscribeFunc func()
+	OnModelFunc     func(model string)
+	OnContentFunc   func(contentSoFar string)
+	OnUsageFunc     func(model string, usage *schema.TokenUsage)
+	OnErrorFunc     func(err error)
+	OnFinishedFunc  func(outcome Outcome)
+	// ShouldContinueFunc nil means always continue.
+	ShouldContinueFunc func() bool
 }
 
 // Compile-time check that the adapter satisfies the interface.
 var _ ResponseListener = ListenerFuncs{}
 
-func (l ListenerFuncs) OnStart(r *RunRegistry) {
-	if l.OnStartF != nil {
-		l.OnStartF(r)
+func (l ListenerFuncs) OnStart(run *RunContext) {
+	if l.OnStartFunc != nil {
+		l.OnStartFunc(run)
 	}
 }
 
 func (l ListenerFuncs) OnSubscribe() {
-	if l.OnSubscribeF != nil {
-		l.OnSubscribeF()
+	if l.OnSubscribeFunc != nil {
+		l.OnSubscribeFunc()
 	}
 }
 
 func (l ListenerFuncs) OnModel(m string) {
-	if l.OnModelF != nil {
-		l.OnModelF(m)
+	if l.OnModelFunc != nil {
+		l.OnModelFunc(m)
 	}
 }
 
 func (l ListenerFuncs) OnContent(c string) {
-	if l.OnContentF != nil {
-		l.OnContentF(c)
+	if l.OnContentFunc != nil {
+		l.OnContentFunc(c)
 	}
 }
 
 func (l ListenerFuncs) OnUsage(m string, u *schema.TokenUsage) {
-	if l.OnUsageF != nil {
-		l.OnUsageF(m, u)
+	if l.OnUsageFunc != nil {
+		l.OnUsageFunc(m, u)
 	}
 }
 
 func (l ListenerFuncs) OnError(err error) {
-	if l.OnErrorF != nil {
-		l.OnErrorF(err)
+	if l.OnErrorFunc != nil {
+		l.OnErrorFunc(err)
 	}
 }
 
 func (l ListenerFuncs) OnFinished(o Outcome) {
-	if l.OnFinishedF != nil {
-		l.OnFinishedF(o)
+	if l.OnFinishedFunc != nil {
+		l.OnFinishedFunc(o)
 	}
 }
 
 func (l ListenerFuncs) ShouldContinue() bool {
-	if l.ShouldContinueF != nil {
-		return l.ShouldContinueF()
+	if l.ShouldContinueFunc != nil {
+		return l.ShouldContinueFunc()
 	}
 	return true
 }
 
-// RunRegistry is the per-run contribution point, handed to OnStart and valid
+// RunContext is the per-run contribution point, handed to OnStart and valid
 // for the duration of that call only: after OnStart returns, the agent reads
 // it once and later mutations are dropped. A listener uses it to attach a
 // late listener of its own, a todo handler, a question handler (the ask tool
 // needs somewhere to put the questions before the run can offer it), or a
 // context value tools will read.
-type RunRegistry struct {
+type RunContext struct {
 	request Request
 
 	mu               sync.Mutex
@@ -182,32 +182,38 @@ type RunRegistry struct {
 	contextMutators []func(context.Context) context.Context
 }
 
-// Request returns the run the registry belongs to.
-func (r *RunRegistry) Request() Request { return r.request }
+// Request returns the request this run context belongs to.
+func (r *RunContext) Request() Request { return r.request }
 
 // Abort stops the run before it starts, with a reason the error carries.
-func (r *RunRegistry) Abort(reason string) {
+func (r *RunContext) Abort(reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.abortReason = reason
 }
 
 // AbortReason is the reason passed to Abort, empty when none was.
-func (r *RunRegistry) AbortReason() string {
+func (r *RunContext) AbortReason() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.abortReason
 }
 
-// AddResponseListener attaches a listener to this run.
-func (r *RunRegistry) AddResponseListener(l ResponseListener) {
+// AddListener attaches a listener to this run.
+func (r *RunContext) AddListener(l ResponseListener) {
+	if l == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.listeners = append(r.listeners, l)
 }
 
 // AddTodoHandler attaches a todo handler to this run.
-func (r *RunRegistry) AddTodoHandler(h tools.TodoEventHandler) {
+func (r *RunContext) AddTodoHandler(h tools.TodoEventHandler) {
+	if h == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.todoHandlers = append(r.todoHandlers, h)
@@ -217,8 +223,8 @@ func (r *RunRegistry) AddTodoHandler(h tools.TodoEventHandler) {
 // background runs, where there is no surface to put a question on and no
 // card to answer it — an ask that cannot be presented fails the ask, which
 // the model experiences as "no channel could ask".
-func (r *RunRegistry) AddQuestionHandler(h tools.QuestionHandler) {
-	if r.request.Background {
+func (r *RunContext) AddQuestionHandler(h tools.QuestionHandler) {
+	if h == nil || r.request.Background {
 		return
 	}
 	r.mu.Lock()
@@ -228,7 +234,10 @@ func (r *RunRegistry) AddQuestionHandler(h tools.QuestionHandler) {
 
 // AddContext adds a context decorator the run's tool context passes
 // through.
-func (r *RunRegistry) AddContext(mutate func(context.Context) context.Context) {
+func (r *RunContext) AddContext(mutate func(context.Context) context.Context) {
+	if mutate == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.contextMutators = append(r.contextMutators, mutate)
@@ -237,25 +246,25 @@ func (r *RunRegistry) AddContext(mutate func(context.Context) context.Context) {
 // The package-private accessors below are read once by the agent, after
 // OnStart.
 
-func (r *RunRegistry) extraListeners() []ResponseListener {
+func (r *RunContext) listenerSnapshot() []ResponseListener {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]ResponseListener(nil), r.listeners...)
 }
 
-func (r *RunRegistry) todoEventHandlers() []tools.TodoEventHandler {
+func (r *RunContext) todoHandlerSnapshot() []tools.TodoEventHandler {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]tools.TodoEventHandler(nil), r.todoHandlers...)
 }
 
-func (r *RunRegistry) questionHandlersList() []tools.QuestionHandler {
+func (r *RunContext) questionHandlerSnapshot() []tools.QuestionHandler {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]tools.QuestionHandler(nil), r.questionHandlers...)
 }
 
-func (r *RunRegistry) contextDecorators() []func(context.Context) context.Context {
+func (r *RunContext) contextMutatorSnapshot() []func(context.Context) context.Context {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]func(context.Context) context.Context(nil), r.contextMutators...)

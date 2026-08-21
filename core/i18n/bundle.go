@@ -1,8 +1,6 @@
-// Package i18n resolves the runtime's own words — what the agent writes into
-// a conversation itself, as opposed to what the model produced. spring-agent
-// routed these through a MessageSource so an embedding application could
-// append its own bundles; the Go port embeds the bundles and exposes Bundle,
-// which an embedder can wrap or extend by constructing one over more maps.
+// Package i18n resolves the runtime's own messages, separate from model
+// output. It embeds the built-in bundles and exposes Bundle, which an
+// An application can wrap or extend it by constructing one over more maps.
 //
 // Only these strings go through a bundle. Model output is whatever language
 // the user wrote in, and tool results are data.

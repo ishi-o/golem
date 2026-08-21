@@ -1,9 +1,6 @@
-// Package config is the runtime configuration: plain structs, populated by
-// the embedder (from environment variables, a file, or code) with defaults
-// supplied here. No binder framework — spring-agent bound these through
-// @ConfigurationProperties, and the Go port's equivalent of that machinery is
-// the Load function's explicit os.Getenv calls, which stay greppable and
-// dependency-free.
+// Package config contains the runtime configuration. Embedders may populate
+// the plain structs from environment variables, a file, or application code;
+// Load provides the environment-backed default.
 package config
 
 import (
@@ -18,51 +15,6 @@ import (
 // prompt of its own. Written to suit any surface: it names no chat, no
 // terminal and no tool that is not part of core, so an integration overrides
 // it to add its own rules rather than to restate these.
-//
-// Rendered against the same variables as any other prompt — userId, chatId
-// and chatType are always supplied, the rest default to empty.
-const DefaultSystemPrompt = `You are a helpful AI assistant working alongside people. You answer questions, look things up, and carry out multi-step tasks on their behalf using the tools available to you.
-
-# Current conversation
-- Sender user ID: {userId}
-- Conversation: {chatId}
-- Conversation type: {chatType}
-
-# Working rules
-- Before replying, call MemoryView("MEMORY.md") to read what you already know about this user, and keep it in mind.
-- For anything that needs several steps, several tool calls, or noticeable time, call TodoWrite first to break the work down, then update each item as you go so the user can watch progress. Skip TodoWrite for simple one-shot answers.
-- The last TodoWrite call comes before your final answer: no item may be left in_progress when you stop.
-- Call CurrentDateTime whenever the answer depends on the current date or time, including relative expressions like "today", "this week" or "in two hours". Never guess the current time or the user's timezone.
-
-# Ask before you do something you cannot undo
-Get on with the work. The tools you have are there to be used, and asking to use them normally is friction, not care. Stop and ask only when you are about to:
-- Destroy or overwrite something that already exists — deleting or truncating files, replacing a document's contents, dropping data, or any shell command whose damage you could not reverse.
-- Reach someone outside this conversation, since a message cannot be unsent.
-- Change a live production system. This one you must always ask about, however small or reversible the change looks: writes through an MCP server that reaches production, anything applied to a Kubernetes cluster or its workloads, deploys, restarts, scaling and config changes, and anything else touching real traffic or real data. Inspecting production — reading, listing, describing, querying — is fine and needs no permission.
-
-Your Bash tool may not be running in a sandbox at all: it may be the user's own machine, with their files, their credentials and their network. Treat an irreversible shell command as you would any other irreversible action.
-
-Everything else — reading, searching, writing new files, publishing, editing docs and sheets, scheduling — go ahead and do, then say what you did.
-
-When you do ask, call AskUserQuestionTool with the safest option first and say plainly what would be lost. If the user has already approved this exact action, or there is nobody to ask, do the reversible part and report what you stopped short of.
-
-# Style
-- Reply in the language the user wrote in.
-- Be concise, warm and direct. Skip filler and ceremony.
-- When you are unsure of a fact, say so and suggest where the user might confirm it. Never invent details.`
-
-// DefaultScheduledTaskPrompt is what a firing scheduled task says to the
-// model, as a template over {taskText} — the prompt the task was created
-// with. A deployment that never schedules anything has no reason to state
-// one, hence the default.
-const DefaultScheduledTaskPrompt = `A scheduled task of yours has fired. The task below was written earlier and is not somebody talking to you now, so there is nobody waiting to answer questions about it: carry it out with the information you have, then report what you did and what came of it.
-
-Because nobody is there to ask, you cannot get permission for anything the task did not already authorise. Do the reversible part, stop before anything destructive or irreversible that the task does not plainly call for, and say in your report what you stopped short of.
-
-Do not create, reschedule or cancel a scheduled task as part of carrying this one out — it is already scheduled, and scheduling it again would only duplicate it.
-
-# The task
-{taskText}`
 
 // DefaultGuideThreshold is the tool-result size above which the large
 // response interceptor diverts the result to a file in the user's workspace.
@@ -71,10 +23,9 @@ Do not create, reschedule or cancel a scheduled task as part of carrying this on
 const DefaultGuideThreshold = 30000
 
 // Config is the whole runtime configuration. Zero values are normalized by
-// Normalize, which every embedder must call before handing the config to the
-// runtime; the one field spring-agent's normalizer forgot to default cost
-// every application that did not configure it a nil pointer from the
-// interceptor — not at startup, but on the first tool call of the first turn.
+// Normalize, which every application must call before handing the config to the
+// runtime. Normalize fills defaults and validates values before the runtime
+// starts.
 type Config struct {
 	// Locale names the language the agent writes its own words in (bundle
 	// selection), as a BCP 47 tag: "en", "zh-CN". Empty means the process
@@ -130,7 +81,7 @@ type ModelPricing struct {
 type Tools struct {
 	AskUserQuestion AskUserQuestion
 	PublishFile     PublishFile
-	Mcp             Mcp
+	MCP             MCP
 	ToolSearch      ToolSearch
 }
 
@@ -149,8 +100,8 @@ type PublishFile struct {
 	BaseURL string
 }
 
-// Mcp configures the MCP client factory.
-type Mcp struct {
+// MCP configures the MCP client factory.
+type MCP struct {
 	// TrustedHosts is the SSRF-guard allowlist: hosts allowed to serve MCP
 	// over plain http, and to resolve to addresses the guard would otherwise
 	// reject (a local monitoring stack, say).
@@ -194,8 +145,8 @@ func (c *Config) Normalize() error {
 	return nil
 }
 
-// Load builds a Config from environment variables — the same variables
-// spring-agent reads, so a deployment's env carries over — and normalizes it.
+// Load builds a Config from the GOLEM_* environment variables and normalizes
+// it.
 // Variables nobody set are simply absent; the two lists below are the whole
 // surface, documented once each:
 //
@@ -226,7 +177,7 @@ func Load() (Config, error) {
 					TTL:     envDuration("GOLEM_ASK_USER_TTL"),
 				},
 				PublishFile: PublishFile{BaseURL: os.Getenv("GOLEM_PUBLISH_BASE_URL")},
-				Mcp:         Mcp{TrustedHosts: splitList(os.Getenv("GOLEM_MCP_TRUSTED_HOSTS"))},
+				MCP:         MCP{TrustedHosts: splitList(os.Getenv("GOLEM_MCP_TRUSTED_HOSTS"))},
 				ToolSearch: ToolSearch{
 					MaxResults:      envInt("GOLEM_TOOL_SEARCH_RESULTS"),
 					EnableThreshold: envInt("GOLEM_TOOL_SEARCH_THRESHOLD"),
@@ -294,6 +245,6 @@ func envDuration(name string) time.Duration {
 // here, which is itself a property worth keeping — secrets belong to model
 // clients and credential stores, not to the runtime config.
 func (c Config) String() string {
-	return fmt.Sprintf("config{locale=%s storage=%s admins=%d guideThreshold=%d askTTL=%s",
+	return fmt.Sprintf("config{locale=%s storage=%s admins=%d guideThreshold=%d askTTL=%s}",
 		c.Locale, c.Storage.Location, len(c.AI.Admins), c.AI.GuideThreshold, c.AI.Tools.AskUserQuestion.TTL)
 }

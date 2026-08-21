@@ -44,8 +44,8 @@ type QuestionHandler interface {
 // answer inside the Ask call — the CLI's terminal prompt, say. Without it,
 // the ask ends the turn: the answers can only arrive after the run is over
 // (a form filled minutes later), so the model cannot be allowed to wait on
-// them. This is the Go shape of spring-agent's SynchronousQuestionHandler
-// marker interface, read before the ask runs.
+// them. InlineAnswers marks handlers that can answer during the current run;
+// other handlers end the turn so a later event can provide the answer.
 type InlineAnswers interface {
 	QuestionHandler
 

@@ -15,44 +15,41 @@ import (
 
 	"github.com/ishi-o/golem/core/chatmemory"
 	"github.com/ishi-o/golem/core/config"
-	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/i18n"
 	"github.com/ishi-o/golem/core/prompt"
+	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
 )
 
-// Agent is the one entry point for running the agent — the Go shape of
-// spring-agent's SpringAgent. Fire and Cancel are the whole public surface;
-// everything else is wiring fields.
+// Agent is the runtime entry point. Fire starts a run and Cancel stops one;
+// models, memory, tools, and observers are supplied by the embedding
+// application.
 //
-// The run loop is hand-rolled over eino's ChatModel rather than eino's
-// canned react agent, for the same reason SpringAgent drives a ChatClient
-// instead of Spring AI's ChatAgent: the runtime's semantics — accumulated
-// content callbacks, cancellation between chunks, the interceptor chain, the
-// ask tool's turn-ending sentinel, tool messages persisted to memory — are
-// all things a canned loop either hides or re-decides.
+// The loop is explicit instead of using a higher-level agent runner so this
+// package owns the runtime semantics: accumulated content callbacks,
+// cancellation, tool interception, turn-ending tools, and message store.
 type Agent struct {
-	Model    model.ChatModel
-	Memory   chatmemory.Repository
-	Provider *tools.Provider
-	// Repos supplies the pending-question repo the outstanding-ask guard
+	model    model.ToolCallingChatModel
+	memory   chatmemory.Repository
+	provider *tools.Provider
+	// backend supplies the pending-question repo the outstanding-ask guard
 	// reads. Nil skips the guard (a harness with no persistence), documented
 	// on asking().
-	Repos  dao.Backend
-	Config config.Config
-	// Messages localizes the model-facing instruction strings (the ask
-	// tool's recorded result, above all).
-	Messages *i18n.Bundle
-	// MemoryWindow bounds how much history a run loads; 0 loads all of it.
-	MemoryWindow int
-	// ModelName names the model in OnModel/OnUsage callbacks when the stream
+	backend store.Backend
+	config  config.Config
+	// messages localizes the model-facing instruction strings (the ask tool's
+	// recorded result, above all).
+	messages *i18n.Bundle
+	// memoryWindow bounds how much history a run loads; 0 loads all of it.
+	memoryWindow int
+	// modelName names the model in OnModel/OnUsage callbacks when the stream
 	// does not carry one.
-	ModelName string
-	// DeclaredListeners observe every run, however it was started — how a
+	modelName string
+	// defaultListeners observe every run, however it was started — how a
 	// surface takes part in runs it did not initiate (a scheduled task
 	// firing, say).
-	DeclaredListeners []ResponseListener
-	Log               *slog.Logger
+	defaultListeners []ResponseListener
+	log              *slog.Logger
 
 	accepting atomic.Bool
 	inFlight  atomic.Int64
@@ -60,9 +57,59 @@ type Agent struct {
 	cancels   map[string]context.CancelFunc
 }
 
-// New wires an Agent and starts accepting runs.
-func New(m model.ChatModel, mem chatmemory.Repository, provider *tools.Provider, cfg config.Config) *Agent {
-	a := &Agent{Model: m, Memory: mem, Provider: provider, Config: cfg, Log: slog.Default(), cancels: map[string]context.CancelFunc{}}
+// AgentOption configures an Agent during construction.
+type AgentOption func(*Agent)
+
+// WithBackend supplies the persistence backend used by the pending-question
+// guard. The agent does not own the backend or any of its connections.
+func WithBackend(backend store.Backend) AgentOption {
+	return func(a *Agent) { a.backend = backend }
+}
+
+// WithLogger supplies the logger used for runtime and callback failures.
+func WithLogger(log *slog.Logger) AgentOption {
+	return func(a *Agent) {
+		if log != nil {
+			a.log = log
+		}
+	}
+}
+
+// WithMemoryWindow limits the number of conversation messages loaded per run.
+// A non-positive value keeps the full conversation.
+func WithMemoryWindow(window int) AgentOption {
+	return func(a *Agent) {
+		if window > 0 {
+			a.memoryWindow = window
+		}
+	}
+}
+
+// WithModelName supplies a fallback name for model callbacks when the stream
+// does not include one.
+func WithModelName(name string) AgentOption {
+	return func(a *Agent) { a.modelName = name }
+}
+
+// WithDefaultListener adds a listener that observes every run.
+func WithDefaultListener(listener ResponseListener) AgentOption {
+	return func(a *Agent) {
+		if listener != nil {
+			a.defaultListeners = append(a.defaultListeners, listener)
+		}
+	}
+}
+
+// New constructs an Agent and starts accepting runs.
+func New(m model.ToolCallingChatModel, mem chatmemory.Repository, provider *tools.Provider, cfg config.Config, options ...AgentOption) *Agent {
+	_ = cfg.Normalize()
+	a := &Agent{model: m, memory: mem, provider: provider, config: cfg, log: slog.Default(), cancels: map[string]context.CancelFunc{}}
+	for _, option := range options {
+		if option != nil {
+			option(a)
+		}
+	}
+	a.messages = i18n.New(cfg.Locale, a.log)
 	a.accepting.Store(true)
 	return a
 }
@@ -79,7 +126,13 @@ func (a *Agent) Fire(req Request) error {
 	if req.Scenario == nil {
 		return fmt.Errorf("golem: request has no scenario")
 	}
-	go a.run(req)
+	ready := make(chan struct{})
+	go a.run(req, ready)
+	// Fire remains non-blocking with respect to model and tool work, but it
+	// does not return before a request id can be cancelled. Without this
+	// small handshake a caller could receive nil and immediately lose a
+	// Cancel race against the new run's goroutine.
+	<-ready
 	return nil
 }
 
@@ -107,20 +160,13 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(2 * time.Second):
-			a.Log.Info("waiting for in-flight runs", "count", a.inFlight.Load())
+			a.log.Info("waiting for in-flight runs", "count", a.inFlight.Load())
 		}
 	}
 	if a.inFlight.Load() > 0 {
 		return fmt.Errorf("golem: %d runs still in flight after shutdown wait", a.inFlight.Load())
 	}
 	return nil
-}
-
-// notify calls a listener callback with panics contained.
-func notify(a *Agent, name string, call func(l ResponseListener)) {
-	for _, l := range append([]ResponseListener(nil), a.DeclaredListeners...) {
-		safeNotify(a, name, l, call)
-	}
 }
 
 type runState struct {
@@ -131,7 +177,7 @@ type runState struct {
 func safeNotify(a *Agent, name string, l ResponseListener, call func(l ResponseListener)) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.Log.Error("listener callback panicked", "callback", name, "panic", r)
+			a.log.Error("listener callback panicked", "callback", name, "panic", r)
 		}
 	}()
 	call(l)
@@ -155,7 +201,7 @@ func (s *runState) shouldContinue() bool {
 func safeShouldContinue(a *Agent, l ResponseListener) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.Log.Error("listener shouldContinue panicked", "panic", r)
+			a.log.Error("listener shouldContinue panicked", "panic", r)
 			// A listener that cannot be asked cannot veto the run either.
 			ok = true
 		}
@@ -166,7 +212,7 @@ func safeShouldContinue(a *Agent, l ResponseListener) (ok bool) {
 // run executes one run on its own goroutine. Every exit path flows through
 // the deferred finish so OnFinished fires exactly once and the composition's
 // MCP connections close whatever the run ended by.
-func (a *Agent) run(req Request) {
+func (a *Agent) run(req Request, ready chan<- struct{}) {
 	a.inFlight.Add(1)
 	defer a.inFlight.Add(-1)
 
@@ -184,9 +230,10 @@ func (a *Agent) run(req Request) {
 			a.mu.Unlock()
 		}()
 	}
+	close(ready)
 
-	registry := &RunRegistry{request: req}
-	state := &runState{a: a, listeners: append(append([]ResponseListener(nil), a.DeclaredListeners...), req.Listeners...)}
+	runContext := &RunContext{request: req}
+	state := &runState{a: a, listeners: append(append([]ResponseListener(nil), a.defaultListeners...), req.Listeners...)}
 
 	cancelled := false
 	var composition *tools.Composition
@@ -200,21 +247,25 @@ func (a *Agent) run(req Request) {
 			composition.Close()
 		}
 	}
+	if a.model == nil {
+		finish(OutcomeFailed, fmt.Errorf("golem: no chat model configured"))
+		return
+	}
 
-	// onStart is where the registry fills; extra listeners join before any
+	// onStart is where the run context fills; extra listeners join before any
 	// other callback fires.
-	state.notifyAll("OnStart", func(l ResponseListener) { l.OnStart(registry) })
-	state.listeners = append(state.listeners, registry.extraListeners()...)
+	state.notifyAll("OnStart", func(l ResponseListener) { l.OnStart(runContext) })
+	state.listeners = append(state.listeners, runContext.listenerSnapshot()...)
 
-	if reason := registry.AbortReason(); reason != "" {
+	if reason := runContext.AbortReason(); reason != "" {
 		finish(OutcomeFailed, fmt.Errorf("run aborted before it started: %s", reason))
 		return
 	}
 
-	runCtx := req.context(ctx, registry.contextDecorators())
+	runCtx := req.context(ctx, runContext.contextMutatorSnapshot())
 
 	// The ask machinery: one handler fanned out, or none at all.
-	questionHandlers := registry.questionHandlersList()
+	questionHandlers := runContext.questionHandlerSnapshot()
 	var questionHandler tools.QuestionHandler
 	answersArriveLater := true
 	if len(questionHandlers) > 0 {
@@ -227,9 +278,13 @@ func (a *Agent) run(req Request) {
 		}
 	}
 
-	todoFan := tools.TodoFanOut(append(append([]tools.TodoEventHandler(nil), req.TodoHandlers...), registry.todoEventHandlers()...))
+	todoFan := tools.TodoFanOut(append(append([]tools.TodoEventHandler(nil), req.TodoHandlers...), runContext.todoHandlerSnapshot()...))
 
-	composition, err := a.Provider.Compose(runCtx, tools.ComposeRequest{
+	if a.provider == nil {
+		finish(OutcomeFailed, fmt.Errorf("golem: no tools provider configured"))
+		return
+	}
+	composition, err := a.provider.Compose(runCtx, tools.ComposeRequest{
 		ScenarioOffers:     req.Scenario.Offers,
 		UserID:             req.UserID,
 		ChatID:             req.ChatID,
@@ -237,10 +292,15 @@ func (a *Agent) run(req Request) {
 		Questions:          a.asking(runCtx, req, questionHandler),
 		AnswersArriveLater: answersArriveLater,
 		AskedMessage:       a.message(i18n.QuestionAsked),
-		AskEnabled:         a.Config.AI.Tools.AskUserQuestion.Enabled,
+		AskEnabled:         a.config.AI.Tools.AskUserQuestion.Enabled,
 	})
 	if err != nil {
 		finish(OutcomeFailed, fmt.Errorf("composing tools: %w", err))
+		return
+	}
+	modelWithTools, err := a.model.WithTools(composition.Info)
+	if err != nil {
+		finish(OutcomeFailed, fmt.Errorf("binding tools: %w", err))
 		return
 	}
 
@@ -273,8 +333,12 @@ func (a *Agent) run(req Request) {
 			cancelled = true
 			break
 		}
-		reader, err := a.Model.Stream(runCtx, messages, model.WithTools(composition.Info))
+		reader, err := modelWithTools.Stream(runCtx, messages)
 		if err != nil {
+			if runCtx.Err() != nil {
+				finish(OutcomeCancelled, nil)
+				return
+			}
 			finish(OutcomeFailed, fmt.Errorf("model stream: %w", err))
 			return
 		}
@@ -286,6 +350,10 @@ func (a *Agent) run(req Request) {
 			}
 			if err != nil {
 				reader.Close()
+				if runCtx.Err() != nil {
+					finish(OutcomeCancelled, nil)
+					return
+				}
 				finish(OutcomeFailed, fmt.Errorf("model stream: %w", err))
 				return
 			}
@@ -302,7 +370,7 @@ func (a *Agent) run(req Request) {
 				name := modelName
 				modelOnce.Do(func() {
 					if name == "" {
-						name = a.ModelName
+						name = a.modelName
 					}
 					modelName = name
 					finalName := name
@@ -333,6 +401,10 @@ func (a *Agent) run(req Request) {
 		for _, call := range assistant.ToolCalls {
 			result, endTurn, err := a.executeTool(runCtx, composition, call)
 			if err != nil {
+				if runCtx.Err() != nil {
+					finish(OutcomeCancelled, nil)
+					return
+				}
 				result, endTurn = fmt.Sprintf("tool error: %v", err), false
 			}
 			toolMsg := &schema.Message{Role: schema.Tool, ToolCallID: call.ID, ToolName: call.Function.Name, Content: result}
@@ -350,9 +422,9 @@ func (a *Agent) run(req Request) {
 		}
 	}
 
-	if a.Memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
-		if err := a.Memory.Append(runCtx, req.ConversationID, newMessages); err != nil {
-			a.Log.Error("appending chat memory", "conversation", req.ConversationID, "err", err)
+	if a.memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
+		if err := a.memory.Append(runCtx, req.ConversationID, newMessages); err != nil {
+			a.log.Error("appending chat memory", "conversation", req.ConversationID, "err", err)
 		}
 	}
 
@@ -397,13 +469,13 @@ func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Comp
 	vars["userId"] = req.UserID
 	vars["chatId"] = req.ChatID
 	vars["chatType"] = req.ChatType
-	system, err := prompt.Render(a.Config.AI.SystemPrompt, vars)
+	system, err := prompt.Render(a.config.AI.SystemPrompt, vars)
 	if err != nil {
 		return nil, fmt.Errorf("rendering system prompt: %w", err)
 	}
 	messages := []*schema.Message{{Role: schema.System, Content: system}}
-	if a.Memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
-		history, err := a.Memory.Load(ctx, req.ConversationID, a.MemoryWindow)
+	if a.memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
+		history, err := a.memory.Load(ctx, req.ConversationID, a.memoryWindow)
 		if err != nil {
 			return nil, fmt.Errorf("loading chat memory: %w", err)
 		}
@@ -414,8 +486,8 @@ func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Comp
 
 // message resolves a localized runtime string.
 func (a *Agent) message(key string) string {
-	if a.Messages != nil {
-		return a.Messages.Get(key)
+	if a.messages != nil {
+		return a.messages.Get(key)
 	}
 	return key
 }

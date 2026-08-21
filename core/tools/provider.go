@@ -4,46 +4,45 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/ishi-o/golem/core/config"
-	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/storage"
+	"github.com/ishi-o/golem/core/store"
 )
 
-// Provider assembles the tool set of a run — the Go shape of spring-agent's
-// AgentToolsProvider. Everything a run offers is composed here: the
-// registered scenario tools (the Go equivalent of @AgentTool beans, filtered
-// through Scenario.Offers), the per-user file, memory and skill tools, the
-// todo and ask tools, publish, and the MCP servers the user can reach.
+// Provider assembles the tool set for a run. It combines registered tools,
+// per-user file, memory and skill tools, todo and question tools, publishing,
+// and any MCP servers available to the user.
 //
 // Registration is process-wide and read per run; Compose is the only thing
 // that touches per-user state.
 type Provider struct {
-	Config     config.Config
-	Workspaces *storage.WorkspaceFactory
-	// Repos supplies the resource repo the publish tools need; nil (a
+	config     config.Config
+	workspaces *storage.WorkspaceFactory
+	// repos supplies the resource repo the publish tools need; nil (a
 	// harness without persistence) means the publish tools are not offered.
-	Repos dao.Backend
-	// MCP builds the run's MCP tools, nil when the deployment has none.
-	MCP MCPBuilder
-	// Interceptors wrap every tool the run offers; the large response
+	repos store.Backend
+	// mcp builds the run's MCP tools, nil when the deployment has none.
+	mcp MCPBuilder
+	// interceptors wrap every tool the run offers; the large response
 	// interceptor is added by NewProvider from the config.
-	Interceptors []Interceptor
+	interceptors []Interceptor
+	log          *slog.Logger
 
-	mu         sync.Mutex
-	registered []RegisteredTool
+	mu         sync.RWMutex
+	registered []registeredTool
 }
 
-// RegisteredTool is one always-available tool, optionally gated by scenario.
-type RegisteredTool struct {
-	Tool tool.InvokableTool
-	// Offers decides whether a run of this scenario gets the tool; nil
-	// means every run does. This is spring-agent's Scenario.offers(tool).
-	Offers func(name string) bool
+type registeredTool struct {
+	tool tool.InvokableTool
+	// offers decides whether a run of this scenario gets the tool; nil
+	// means every run does.
+	offers func(name string) bool
 }
 
 // MCPBuilder is what the mcp package supplies to the provider: the servers
@@ -61,28 +60,83 @@ type MCPTools struct {
 	Closer io.Closer
 }
 
-// NewProvider wires the provider and adds the built-in interceptor.
-func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos dao.Backend, mcp MCPBuilder) *Provider {
-	return &Provider{
-		Config:     cfg,
-		Workspaces: workspaces,
-		Repos:      repos,
-		MCP:        mcp,
-		Interceptors: []Interceptor{
+// ProviderOption configures a Provider during construction.
+type ProviderOption func(*Provider)
+
+// WithLogger supplies the logger used for optional-tool failures.
+func WithLogger(log *slog.Logger) ProviderOption {
+	return func(p *Provider) {
+		if log != nil {
+			p.log = log
+		}
+	}
+}
+
+// WithInterceptor adds an interceptor to the provider's tool chain.
+func WithInterceptor(interceptor Interceptor) ProviderOption {
+	return func(p *Provider) {
+		if interceptor != nil {
+			p.interceptors = append(p.interceptors, interceptor)
+		}
+	}
+}
+
+// NewProvider constructs the provider and adds the built-in interceptor.
+func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos store.Backend, mcp MCPBuilder, options ...ProviderOption) *Provider {
+	_ = cfg.Normalize()
+	if workspaces == nil {
+		workspaces = storage.NewWorkspaceFactory(cfg.Storage.Location)
+	}
+	p := &Provider{
+		config:     cfg,
+		workspaces: workspaces,
+		repos:      repos,
+		mcp:        mcp,
+		log:        slog.Default(),
+		interceptors: []Interceptor{
 			&LargeResponseInterceptor{
 				GuideThreshold: cfg.AI.GuideThreshold,
 				Workspaces:     workspaces,
 			},
 		},
 	}
+	for _, option := range options {
+		if option != nil {
+			option(p)
+		}
+	}
+	return p
 }
 
-// Register makes a tool available to runs. Call it during wiring, before
-// the first Fire; offers gates it by scenario (see RegisteredTool).
+// Register makes a tool available to runs. Call it during application setup,
+// before the first Fire; offers gates it by scenario.
 func (p *Provider) Register(t tool.InvokableTool, offers func(name string) bool) {
+	if t == nil {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.registered = append(p.registered, RegisteredTool{Tool: t, Offers: offers})
+	p.registered = append(p.registered, registeredTool{tool: t, offers: offers})
+}
+
+// RegisterSandbox adds the common shell tools for one optional sandbox
+// backend. The backend remains owned by the application and should be closed
+// during application shutdown.
+func (p *Provider) RegisterSandbox(sandbox Sandbox, config SandboxToolsConfig) error {
+	if p == nil {
+		return fmt.Errorf("golem/tools: nil provider")
+	}
+	if config.Credentials == nil && p.repos != nil {
+		config.Credentials = p.repos.ShellCredentials()
+	}
+	registered, err := NewSandboxTools(sandbox, config)
+	if err != nil {
+		return err
+	}
+	for _, registeredTool := range registered {
+		p.Register(registeredTool, nil)
+	}
+	return nil
 }
 
 // ComposeRequest names what Compose needs from the run. ScenarioOffers is
@@ -113,24 +167,26 @@ type Composition struct {
 
 // Compose assembles the run's tools. It is called from the run goroutine,
 // not the Fire caller: MCP handshakes are blocking network work, and the
-// callers are event dispatchers with delivery deadlines (a channel that
-// sees no acknowledgement concludes its event was lost and sends it again —
-// the reason spring-agent subscribed on boundedElastic).
+// callers may be event dispatchers with delivery deadlines, so connection
+// setup remains inside the run rather than blocking the event receiver.
 func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Composition, error) {
+	if p == nil {
+		return nil, fmt.Errorf("golem/tools: nil provider")
+	}
 	var tools []tool.InvokableTool
 
-	home := p.Workspaces.ForOwner(req.UserID)
+	home := p.workspaces.ForOwner(req.UserID)
 
 	// The scenario tools, filtered. A name-resolved filter (rather than
 	// passing tool values) keeps the Scenario interface free of this
 	// package's types.
-	p.mu.Lock()
-	registered := make([]RegisteredTool, len(p.registered))
+	p.mu.RLock()
+	registered := make([]registeredTool, len(p.registered))
 	copy(registered, p.registered)
-	p.mu.Unlock()
+	p.mu.RUnlock()
 	for _, e := range registered {
-		if e.Offers != nil && req.ScenarioOffers != nil {
-			info, err := e.Tool.Info(ctx)
+		if e.offers != nil && req.ScenarioOffers != nil {
+			info, err := e.tool.Info(ctx)
 			if err != nil || info == nil {
 				continue
 			}
@@ -138,7 +194,7 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 				continue
 			}
 		}
-		tools = append(tools, e.Tool)
+		tools = append(tools, e.tool)
 	}
 
 	// The per-user tools. One FileSystemTools per run, rooted at the
@@ -163,10 +219,10 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 
 	tools = append(tools, CurrentDateTime(), TodoWrite(req.TodoHandler))
 
-	// Publish needs the resource repo; a provider wired without persistence
+	// Publish needs the resource repo; a provider configured without persistence
 	// (a test harness, say) simply does not offer it.
-	if p.Repos != nil {
-		publish := NewPublishFileTools(p.Repos.PublishedResources(), storage.NewFileSystem(p.Config.Storage.Location), home, p.Config.AI.Tools.PublishFile.BaseURL)
+	if p.repos != nil {
+		publish := NewPublishFileTools(p.repos.PublishedResources(), storage.NewFileSystem(p.config.Storage.Location), home, p.config.AI.Tools.PublishFile.BaseURL)
 		tools = append(tools, publish.Tools()...)
 	}
 
@@ -182,8 +238,8 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	// The MCP tools last: they are the ones with a lifecycle. A failing
 	// server costs its tools, never the run — a monitoring server being
 	// down must not take the agent's ability to answer with it.
-	if p.MCP != nil {
-		mcpTools, err := p.MCP.Build(ctx, req.UserID, req.ChatID)
+	if p.mcp != nil {
+		mcpTools, err := p.mcp.Build(ctx, req.UserID, req.ChatID)
 		if err == nil {
 			tools = append(tools, mcpTools.Tools...)
 			inner := comp.Close
@@ -192,12 +248,12 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 				inner()
 				if closer != nil {
 					if err := closer.Close(); err != nil {
-						fmt.Printf("golem: closing mcp tools: %v\n", err)
+						p.logger().Error("closing MCP tools failed", "err", err)
 					}
 				}
 			}
 		} else if err != nil {
-			fmt.Printf("golem: mcp tools unavailable for this run: %v\n", err)
+			p.logger().Warn("MCP tools unavailable for this run", "err", err)
 		}
 	}
 
@@ -205,13 +261,24 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	comp.Tools = make([]tool.InvokableTool, 0, len(tools))
 	comp.Info = make([]*schema.ToolInfo, 0, len(tools))
 	for _, t := range tools {
-		wrapped := WrapTool(t, p.Interceptors...)
+		if t == nil {
+			continue
+		}
+		wrapped := WrapTool(t, p.interceptors...)
 		info, err := wrapped.Info(ctx)
 		if err != nil {
+			comp.Close()
 			return nil, fmt.Errorf("tool info: %w", err)
 		}
 		comp.Tools = append(comp.Tools, wrapped)
 		comp.Info = append(comp.Info, info)
 	}
 	return comp, nil
+}
+
+func (p *Provider) logger() *slog.Logger {
+	if p.log != nil {
+		return p.log
+	}
+	return slog.Default()
 }
