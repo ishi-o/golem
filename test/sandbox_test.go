@@ -13,6 +13,8 @@ import (
 	"github.com/ishi-o/golem/core/dao/inmemory"
 	"github.com/ishi-o/golem/core/tools"
 	kubesandbox "github.com/ishi-o/golem/sandbox/kubernetes"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,58 +71,48 @@ func findTool(t *testing.T, all []tool.InvokableTool, name string) tool.Invokabl
 	t.Helper()
 	for _, candidate := range all {
 		info, err := candidate.Info(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if info.Name == name {
 			return candidate
 		}
 	}
-	t.Fatalf("tool %q was not registered", name)
+	require.FailNow(t, "tool was not registered: "+name)
 	return nil
 }
 
 func invokeTool(t *testing.T, candidate tool.InvokableTool, ctx context.Context, args string) string {
 	t.Helper()
 	result, err := candidate.InvokableRun(ctx, args)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return result
 }
 
 func TestSandboxToolsShareTheBackendIndependentShellProtocol(t *testing.T) {
 	backend := &fakeSandbox{removeOK: true}
 	registered, err := tools.NewSandboxTools(backend, tools.SandboxToolsConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ctx := tools.UserID.With(context.Background(), "user-1")
 
 	bash := findTool(t, registered, tools.ToolNameBash)
 	output := invokeTool(t, bash, ctx, `{"command":"printf 'hello'"}`)
-	if !strings.Contains(output, "bash_id: shell_") || !strings.Contains(output, "hello") {
-		t.Fatalf("foreground result = %q", output)
-	}
+	assert.Contains(t, output, "bash_id: shell_")
+	assert.Contains(t, output, "hello")
 
 	bashOutput := findTool(t, registered, tools.ToolNameBashOutput)
 	output = invokeTool(t, bashOutput, ctx, `{"bash_id":"shell_test","filter":"two"}`)
-	if !strings.Contains(output, "Status: Running") || !strings.Contains(output, "line two") || strings.Contains(output, "line one") {
-		t.Fatalf("filtered background result = %q", output)
-	}
+	assert.Contains(t, output, "Status: Running")
+	assert.Contains(t, output, "line two")
+	assert.NotContains(t, output, "line one")
 
 	kill := findTool(t, registered, tools.ToolNameKillShell)
-	if output = invokeTool(t, kill, ctx, `{"bash_id":"shell_test"}`); !strings.Contains(output, "Successfully killed") {
-		t.Fatalf("kill result = %q", output)
-	}
+	output = invokeTool(t, kill, ctx, `{"bash_id":"shell_test"}`)
+	assert.Contains(t, output, "Successfully killed")
 
 	restart := findTool(t, registered, tools.ToolNameRestartSandbox)
-	if output = invokeTool(t, restart, ctx, `{}`); !strings.Contains(output, "fresh sandbox") {
-		t.Fatalf("restart result = %q", output)
-	}
-	if len(backend.ensures) != 3 || len(backend.removes) != 1 {
-		t.Fatalf("backend lifecycle calls: ensures=%v removes=%v", backend.ensures, backend.removes)
-	}
+	output = invokeTool(t, restart, ctx, `{}`)
+	assert.Contains(t, output, "fresh sandbox")
+	assert.Len(t, backend.ensures, 3)
+	assert.Len(t, backend.removes, 1)
 }
 
 func TestCredentialToolsNeverReturnValues(t *testing.T) {
@@ -130,14 +122,11 @@ func TestCredentialToolsNeverReturnValues(t *testing.T) {
 
 	set := findTool(t, registered, tools.ToolNameSetCredential)
 	result := invokeTool(t, set, ctx, `{"name":"API_TOKEN","value":"secret-value"}`)
-	if strings.Contains(result, "secret-value") {
-		t.Fatalf("set result disclosed secret: %q", result)
-	}
+	assert.NotContains(t, result, "secret-value")
 	list := findTool(t, registered, tools.ToolNameListCredentials)
 	result = invokeTool(t, list, ctx, `{}`)
-	if !strings.Contains(result, "API_TOKEN") || strings.Contains(result, "secret-value") {
-		t.Fatalf("list result = %q", result)
-	}
+	assert.Contains(t, result, "API_TOKEN")
+	assert.NotContains(t, result, "secret-value")
 }
 
 func inmemoryBackend() dao.ShellCredentialRepo {
@@ -158,19 +147,14 @@ func TestKubernetesSandboxReusesAndRemovesLabeledUserJobs(t *testing.T) {
 		WorkingDir: "/workspace",
 		PVCMounts:  []kubesandbox.PVCMount{{PVCName: "workspace", MountPath: "/workspace"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sandbox.Ensure(context.Background(), userID); err != nil {
-		t.Fatalf("ensure existing pod: %v", err)
-	}
+	require.NoError(t, err)
+	_, err = sandbox.Ensure(context.Background(), userID)
+	require.NoError(t, err)
 	removed, err := sandbox.Remove(context.Background(), userID)
-	if err != nil || !removed {
-		t.Fatalf("remove = %v, %v", removed, err)
-	}
-	if _, err := client.BatchV1().Jobs("default").Get(context.Background(), "shell-job", metav1.GetOptions{}); err == nil {
-		t.Fatal("shell job still exists after remove")
-	}
+	require.NoError(t, err)
+	assert.True(t, removed)
+	_, err = client.BatchV1().Jobs("default").Get(context.Background(), "shell-job", metav1.GetOptions{})
+	assert.Error(t, err, "shell job still exists after remove")
 }
 
 func shortHash(value string) string {

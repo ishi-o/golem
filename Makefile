@@ -12,7 +12,7 @@ build:
 	@for m in $(MODULES); do (cd $$m && go build ./...) || exit 1; done
 
 test:
-	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
+	@go test ./test/...
 
 # gofmt -l prints the files it would rewrite; an empty list is the pass
 # condition. go vet runs per module for the same reason build does.

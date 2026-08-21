@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/ishi-o/golem/connector/feishu"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDecodeFeishuMessageEvent(t *testing.T) {
@@ -17,17 +19,17 @@ func TestDecodeFeishuMessageEvent(t *testing.T) {
 		"event":{"sender":{"sender_id":{"open_id":"ou-user"}},
 			"message":{"message_id":"om-1","chat_id":"oc-chat","chat_type":"group","content":"{\"text\":\" hello \"}"}}
 	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if event.EventID != "evt-1" || event.MessageID != "om-1" || event.UserID != "ou-user" || event.ChatID != "oc-chat" || event.Text != "hello" {
-		t.Fatalf("decoded event = %+v", event)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "evt-1", event.EventID)
+	assert.Equal(t, "om-1", event.MessageID)
+	assert.Equal(t, "ou-user", event.UserID)
+	assert.Equal(t, "oc-chat", event.ChatID)
+	assert.Equal(t, "hello", event.Text)
 }
 
 func TestFeishuClientRequiresAbsoluteBaseURL(t *testing.T) {
 	if _, err := feishu.NewClient(feishu.ClientConfig{AppID: "app", AppSecret: "secret", BaseURL: "localhost"}); err == nil {
-		t.Fatal("relative base URL was accepted")
+		require.FailNow(t, "relative base URL was accepted")
 	}
 }
 
@@ -49,10 +51,10 @@ func TestFeishuClientUsesSDKMessageAPIs(t *testing.T) {
 			}), nil
 		case r.Method == http.MethodPost && r.URL.Path == "/open-apis/im/v1/messages":
 			if got := r.URL.Query().Get("receive_id_type"); got != "chat_id" {
-				t.Errorf("receive_id_type = %q", got)
+				assert.Equal(t, "chat_id", got)
 			}
 			if got := r.Header.Get("Authorization"); got != "Bearer tenant-token" {
-				t.Errorf("authorization = %q", got)
+				assert.Equal(t, "Bearer tenant-token", got)
 			}
 			return jsonResponse(r, map[string]any{"code": 0, "msg": "ok", "data": map[string]string{"message_id": "om-created"}}), nil
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reply"):
@@ -78,27 +80,22 @@ func TestFeishuClientUsesSDKMessageAPIs(t *testing.T) {
 			Transport: transport,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	created, err := client.SendText(t.Context(), feishu.ReceiveIDChatID, "oc-chat", "hello")
-	if err != nil || created != "om-created" {
-		t.Fatalf("SendText() = %q, %v", created, err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "om-created", created)
 	replied, err := client.ReplyText(t.Context(), created, "answer")
-	if err != nil || replied != "om-replied" {
-		t.Fatalf("ReplyText() = %q, %v", replied, err)
-	}
-	if err := client.UpdateCard(t.Context(), replied, map[string]string{"content": "done"}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "om-replied", replied)
+	require.NoError(t, client.UpdateCard(t.Context(), replied, map[string]string{"content": "done"}))
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got := strings.Join(paths, ","); got != "POST /open-apis/auth/v3/tenant_access_token/internal,POST /open-apis/im/v1/messages,POST /open-apis/im/v1/messages/om-created/reply,PATCH /open-apis/im/v1/messages/om-replied" {
-		t.Fatalf("SDK request sequence = %q", got)
-	}
+	assert.Equal(t,
+		"POST /open-apis/auth/v3/tenant_access_token/internal,POST /open-apis/im/v1/messages,POST /open-apis/im/v1/messages/om-created/reply,PATCH /open-apis/im/v1/messages/om-replied",
+		strings.Join(paths, ","),
+	)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

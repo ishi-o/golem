@@ -13,6 +13,8 @@ import (
 	"github.com/ishi-o/golem/test/daocontract"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type sqlxFixture struct {
@@ -24,21 +26,13 @@ type sqlxFixture struct {
 func newSQLXFixture(t *testing.T) *sqlxFixture {
 	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	database := sqlx.NewDb(db, "sqlite3")
 	store, err := sqlxstore.New(database)
-	if err != nil {
-		database.Close()
-		t.Fatal(err)
-	}
-	if err := store.Migrate(context.Background()); err != nil {
-		database.Close()
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(context.Background()))
 	return &sqlxFixture{db: database, store: store}
 }
 
@@ -52,9 +46,7 @@ func (f *sqlxFixture) Close() error { return f.db.Close() }
 func TestSQLXPersistenceContract(t *testing.T) {
 	fixture := newSQLXFixture(t)
 	defer func() {
-		if err := fixture.Close(); err != nil {
-			t.Errorf("close database: %v", err)
-		}
+		assert.NoError(t, fixture.Close())
 	}()
 	daocontract.Run(t, fixture)
 }

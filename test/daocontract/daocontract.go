@@ -11,13 +11,14 @@ package daocontract
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/ishi-o/golem/core/chatmemory"
 	"github.com/ishi-o/golem/core/dao"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Fixture is one backend under test, fresh per Run call.
@@ -55,7 +56,7 @@ func testMcpServerConfig(t *testing.T, f Fixture) {
 	owner := f.Owner()
 	repo := f.Backend().McpServerConfigs()
 
-	if err := repo.Save(ctx, dao.McpServerConfig{
+	require.NoError(t, repo.Save(ctx, dao.McpServerConfig{
 		ID:         "srv-1",
 		OwnerID:    owner,
 		Name:       "monitoring",
@@ -66,55 +67,37 @@ func testMcpServerConfig(t *testing.T, f Fixture) {
 		Version:    "2.0.0",
 		Enabled:    true,
 		SharedWith: []string{"ou_shared", dao.SharedWithAll},
-	}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	}))
 
 	found, err := repo.FindByOwnerIDAndName(ctx, owner, "monitoring")
-	if err != nil || found == nil {
-		t.Fatalf("find by owner and name: %v %v", found, err)
-	}
-	if found.Headers["Authorization"] != "Bearer x" {
-		t.Fatalf("headers did not round trip: %v", found.Headers)
-	}
-	if !reflect.DeepEqual(found.SharedWith, []string{"ou_shared", dao.SharedWithAll}) {
-		t.Fatalf("sharedWith did not round trip: %v", found.SharedWith)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, "Bearer x", found.Headers["Authorization"])
+	assert.Equal(t, []string{"ou_shared", dao.SharedWithAll}, found.SharedWith)
 
 	exists, err := repo.ExistsByOwnerIDAndName(ctx, owner, "monitoring")
-	if err != nil || !exists {
-		t.Fatalf("exists: %v %v", exists, err)
-	}
+	require.NoError(t, err)
+	assert.True(t, exists)
 	other, err := repo.ExistsByOwnerIDAndName(ctx, owner, "absent")
-	if err != nil || other {
-		t.Fatalf("absent server reported existing: %v %v", other, err)
-	}
+	require.NoError(t, err)
+	assert.False(t, other)
 
 	// A second server for the same owner must not disturb the first; a
 	// second owner's server must stay invisible to the first owner's
 	// queries.
-	if err := repo.Save(ctx, dao.McpServerConfig{ID: "srv-2", OwnerID: owner, Name: "other", Transport: dao.McpTransportStreamableHTTP, URL: "https://x.test"}); err != nil {
-		t.Fatalf("save second: %v", err)
-	}
-	if err := repo.Save(ctx, dao.McpServerConfig{ID: "srv-3", OwnerID: f.Owner(), Name: "monitoring", Transport: dao.McpTransportStreamableHTTP, URL: "https://y.test"}); err != nil {
-		t.Fatalf("save other owner: %v", err)
-	}
+	require.NoError(t, repo.Save(ctx, dao.McpServerConfig{ID: "srv-2", OwnerID: owner, Name: "other", Transport: dao.McpTransportStreamableHTTP, URL: "https://x.test"}))
+	require.NoError(t, repo.Save(ctx, dao.McpServerConfig{ID: "srv-3", OwnerID: f.Owner(), Name: "monitoring", Transport: dao.McpTransportStreamableHTTP, URL: "https://y.test"}))
 	all, err := repo.FindByOwnerID(ctx, owner)
-	if err != nil || len(all) != 2 {
-		t.Fatalf("find by owner: %d entries, err %v", len(all), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, all, 2)
 
-	if err := repo.DeleteByOwnerIDAndName(ctx, owner, "monitoring"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	require.NoError(t, repo.DeleteByOwnerIDAndName(ctx, owner, "monitoring"))
 	// Deleting again is a no-op, not an error: the caller's intent ("make it
 	// gone") already holds.
-	if err := repo.DeleteByOwnerIDAndName(ctx, owner, "monitoring"); err != nil {
-		t.Fatalf("second delete errored: %v", err)
-	}
-	if all, _ := repo.FindByOwnerID(ctx, owner); len(all) != 1 {
-		t.Fatalf("delete removed more than the named server: %d left", len(all))
-	}
+	require.NoError(t, repo.DeleteByOwnerIDAndName(ctx, owner, "monitoring"))
+	all, err = repo.FindByOwnerID(ctx, owner)
+	require.NoError(t, err)
+	assert.Len(t, all, 1)
 }
 
 func testMcpServerConfigAccess(t *testing.T, f Fixture) {
@@ -144,20 +127,12 @@ func testMcpServerConfigAccess(t *testing.T, f Fixture) {
 	// everyone sentinel; the identifiers list mirrors what the runtime
 	// derives via dao.McpServerConfigAccessIdentifiers.
 	accessible, err := repo.FindAccessibleTo(ctx, caller, dao.McpServerConfigAccessIdentifiers(caller, "chat-1"))
-	if err != nil {
-		t.Fatalf("find accessible: %v", err)
-	}
-	if got := ids(accessible); !sameSet(got, []string{"own-1", "shr-1", "cht-1", "pub-1"}) {
-		t.Fatalf("accessible set wrong: %v", got)
-	}
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"own-1", "shr-1", "cht-1", "pub-1"}, ids(accessible))
 
 	shared, err := repo.FindBySharedWithIn(ctx, dao.McpServerConfigAccessIdentifiers(caller, ""))
-	if err != nil {
-		t.Fatalf("find shared: %v", err)
-	}
-	if got := ids(shared); !sameSet(got, []string{"shr-1", "pub-1"}) {
-		t.Fatalf("shared set wrong: %v", got)
-	}
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"shr-1", "pub-1"}, ids(shared))
 }
 
 func repoSharedWithChat(owner, chatID string) dao.McpServerConfig {
@@ -181,35 +156,27 @@ func testPendingQuestion(t *testing.T, f Fixture) {
 	mustSave(t, repo.Save(ctx, q))
 
 	found, err := repo.FindByID(ctx, "pq-1")
-	if err != nil || found == nil {
-		t.Fatalf("find: %v %v", found, err)
-	}
-	if found.QuestionsJSON != q.QuestionsJSON || found.CardID != "card-1" {
-		t.Fatalf("round trip lost fields: %+v", found)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, q.QuestionsJSON, found.QuestionsJSON)
+	assert.Equal(t, "card-1", found.CardID)
 
 	pending, err := repo.FindByConversationIDAndStatus(ctx, "conv-1", dao.PendingQuestionStatusPending)
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("pending query: %d, err %v", len(pending), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
 
 	// A partial update must leave every other field alone; callers race other
 	// answer paths and cannot be trusted to write the rest of the row back.
-	if err := repo.UpdateStatus(ctx, "pq-1", dao.PendingQuestionStatusAnswered); err != nil {
-		t.Fatalf("update status: %v", err)
-	}
-	found, _ = repo.FindByID(ctx, "pq-1")
-	if found.Status != dao.PendingQuestionStatusAnswered {
-		t.Fatalf("status not updated: %+v", found)
-	}
-	if found.QuestionsJSON != q.QuestionsJSON {
-		t.Fatalf("partial update clobbered questionsJson: %+v", found)
-	}
+	require.NoError(t, repo.UpdateStatus(ctx, "pq-1", dao.PendingQuestionStatusAnswered))
+	found, err = repo.FindByID(ctx, "pq-1")
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, dao.PendingQuestionStatusAnswered, found.Status)
+	assert.Equal(t, q.QuestionsJSON, found.QuestionsJSON)
 	// What stops a double-submit from starting a second run.
 	pending, err = repo.FindByConversationIDAndStatus(ctx, "conv-1", dao.PendingQuestionStatusPending)
-	if err != nil || len(pending) != 0 {
-		t.Fatalf("answered question still pending: %d, err %v", len(pending), err)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, pending)
 }
 
 func testPublishedResource(t *testing.T, f Fixture) {
@@ -226,20 +193,17 @@ func testPublishedResource(t *testing.T, f Fixture) {
 	mustSave(t, repo.Save(ctx, r))
 
 	found, err := repo.FindByID(ctx, "token-1")
-	if err != nil || found == nil || found.Visibility != dao.VisibilityPublic {
-		t.Fatalf("find: %v %v", found, err)
-	}
-	if missing, err := repo.FindByID(ctx, "absent"); err != nil || missing != nil {
-		t.Fatalf("absent token must be nil without error: %v %v", missing, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, dao.VisibilityPublic, found.Visibility)
+	missing, err := repo.FindByID(ctx, "absent")
+	require.NoError(t, err)
+	assert.Nil(t, missing)
 
-	if err := repo.DeleteByID(ctx, "token-1"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	require.NoError(t, repo.DeleteByID(ctx, "token-1"))
 	found, err = repo.FindByID(ctx, "token-1")
-	if err != nil || found != nil {
-		t.Fatalf("deleted token still resolvable: %v %v", found, err)
-	}
+	require.NoError(t, err)
+	assert.Nil(t, found)
 }
 
 func testScheduledTask(t *testing.T, f Fixture) {
@@ -261,30 +225,23 @@ func testScheduledTask(t *testing.T, f Fixture) {
 	mustSave(t, repo.Save(ctx, dao.ScheduledTask{ID: "task-4", UserID: f.Owner(), TaskText: "done", Status: dao.ScheduledTaskStatusCompleted}))
 
 	active, err := repo.FindByStatus(ctx, dao.ScheduledTaskStatusActive)
-	if err != nil || len(active) != 3 {
-		t.Fatalf("find by status: %d, err %v", len(active), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, active, 3)
 	mine, err := repo.FindByUserIDAndStatus(ctx, owner, dao.ScheduledTaskStatusActive)
-	if err != nil || len(mine) != 2 {
-		t.Fatalf("find by user and status: %d, err %v", len(mine), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, mine, 2)
 
 	// The partial update the scheduler depends on: a firing, a cancel and a
 	// completion can all land on the same task, none writing the others'
 	// fields back.
-	if err := repo.UpdateStatus(ctx, "task-1", dao.ScheduledTaskStatusCompleted); err != nil {
-		t.Fatalf("update status: %v", err)
-	}
+	require.NoError(t, repo.UpdateStatus(ctx, "task-1", dao.ScheduledTaskStatusCompleted))
 	found, err := repo.FindByID(ctx, "task-1")
-	if err != nil || found == nil {
-		t.Fatalf("find after update: %v %v", found, err)
-	}
-	if found.Status != dao.ScheduledTaskStatusCompleted {
-		t.Fatalf("status not updated: %+v", found)
-	}
-	if found.TaskText != "check the thing" || found.CronExpression != "*/5 * * * *" || !found.Background {
-		t.Fatalf("partial update clobbered fields: %+v", found)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, dao.ScheduledTaskStatusCompleted, found.Status)
+	assert.Equal(t, "check the thing", found.TaskText)
+	assert.Equal(t, "*/5 * * * *", found.CronExpression)
+	assert.True(t, found.Background)
 }
 
 func testShellCredential(t *testing.T, f Fixture) {
@@ -296,20 +253,17 @@ func testShellCredential(t *testing.T, f Fixture) {
 	mustSave(t, repo.Save(ctx, cred))
 
 	found, err := repo.FindByOwnerIDAndName(ctx, owner, "api")
-	if err != nil || found == nil || found.Value != "secret" {
-		t.Fatalf("find by owner and name: %v %v", found, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, "secret", found.Value)
 	all, err := repo.FindByOwnerID(ctx, owner)
-	if err != nil || len(all) != 1 {
-		t.Fatalf("find by owner: %d, err %v", len(all), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, all, 1)
 
-	if err := repo.DeleteByOwnerIDAndName(ctx, owner, "api"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if all, _ := repo.FindByOwnerID(ctx, owner); len(all) != 0 {
-		t.Fatal("credential survived delete")
-	}
+	require.NoError(t, repo.DeleteByOwnerIDAndName(ctx, owner, "api"))
+	all, err = repo.FindByOwnerID(ctx, owner)
+	require.NoError(t, err)
+	assert.Empty(t, all)
 }
 
 func testProcessedMessage(t *testing.T, f Fixture) {
@@ -317,29 +271,18 @@ func testProcessedMessage(t *testing.T, f Fixture) {
 	repo := f.Backend().ProcessedMessages()
 
 	claimed, err := repo.Claim(ctx, "msg-1")
-	if err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if !claimed {
-		t.Fatal("first claim lost the race against nobody")
-	}
+	require.NoError(t, err)
+	assert.True(t, claimed, "first claim lost the race against nobody")
 	again, err := repo.Claim(ctx, "msg-1")
-	if err != nil {
-		t.Fatalf("second claim errored: %v", err)
-	}
-	if again {
-		t.Fatal("second claim won; a redelivery would be answered twice")
-	}
+	require.NoError(t, err)
+	assert.False(t, again, "second claim won; a redelivery would be answered twice")
 
 	// Release is for the nothing-was-done case; the channel's retry must be
 	// able to claim again afterwards.
-	if err := repo.Release(ctx, "msg-1"); err != nil {
-		t.Fatalf("release: %v", err)
-	}
+	require.NoError(t, repo.Release(ctx, "msg-1"))
 	third, err := repo.Claim(ctx, "msg-1")
-	if err != nil || !third {
-		t.Fatalf("claim after release: %v %v", third, err)
-	}
+	require.NoError(t, err)
+	assert.True(t, third)
 }
 
 func testChatMemory(t *testing.T, f Fixture) {
@@ -353,72 +296,41 @@ func testChatMemory(t *testing.T, f Fixture) {
 		{Role: schema.Tool, ToolCallID: "c1", ToolName: "t", Content: "result"},
 		{Role: schema.Assistant, Content: "done"},
 	}
-	if err := mem.Append(ctx, conv, messages); err != nil {
-		t.Fatalf("append: %v", err)
-	}
+	require.NoError(t, mem.Append(ctx, conv, messages))
 
 	loaded, err := mem.Load(ctx, conv, 0)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(loaded) != len(messages) {
-		t.Fatalf("load returned %d of %d messages", len(loaded), len(messages))
-	}
+	require.NoError(t, err)
+	require.Len(t, loaded, len(messages))
 	// Tool messages must survive the round trip — the property whose absence
 	// in Spring's JDBC repository forced spring-agent's synthetic-message
 	// workaround. See chatmemory's package comment.
-	if loaded[2].Role != schema.Tool || loaded[2].ToolCallID != "c1" {
-		t.Fatalf("tool message lost: %+v", loaded[2])
-	}
-	if len(loaded[1].ToolCalls) != 1 {
-		t.Fatalf("assistant tool calls lost: %+v", loaded[1])
-	}
+	assert.Equal(t, schema.Tool, loaded[2].Role)
+	assert.Equal(t, "c1", loaded[2].ToolCallID)
+	assert.Len(t, loaded[1].ToolCalls, 1)
 
 	// The window returns the most recent messages, oldest first.
 	windowed, err := mem.Load(ctx, conv, 2)
-	if err != nil || len(windowed) != 2 || windowed[0].Content != "result" {
-		t.Fatalf("windowed load wrong: %d messages, err %v", len(windowed), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, windowed, 2)
+	assert.Equal(t, "result", windowed[0].Content)
 
 	// An unknown conversation is empty, not an error.
 	fresh, err := mem.Load(ctx, "never-seen", 0)
-	if err != nil || len(fresh) != 0 {
-		t.Fatalf("unknown conversation: %d messages, err %v", len(fresh), err)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, fresh)
 
 	listed, err := mem.ListConversations(ctx)
-	if err != nil || len(listed) != 1 || listed[0] != conv {
-		t.Fatalf("list conversations: %v, err %v", listed, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, conv, listed[0])
 
-	if err := mem.Delete(ctx, conv); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	loaded, _ = mem.Load(ctx, conv, 0)
-	if len(loaded) != 0 {
-		t.Fatalf("conversation survived delete: %d messages", len(loaded))
-	}
+	require.NoError(t, mem.Delete(ctx, conv))
+	loaded, err = mem.Load(ctx, conv, 0)
+	require.NoError(t, err)
+	assert.Empty(t, loaded)
 }
 
 func mustSave(t *testing.T, err error) {
 	t.Helper()
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-}
-
-func sameSet(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	set := map[string]bool{}
-	for _, s := range got {
-		set[s] = true
-	}
-	for _, s := range want {
-		if !set[s] {
-			return false
-		}
-	}
-	return true
+	require.NoError(t, err)
 }

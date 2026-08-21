@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
@@ -18,6 +22,7 @@ import (
 	"github.com/ishi-o/golem/core/dao/inmemory"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/tools"
+	"github.com/ishi-o/golem/test/mocks"
 )
 
 // fakeModel plays the model: each Stream call pops one scripted turn (a
@@ -31,8 +36,6 @@ type fakeModel struct {
 	tools []*schema.ToolInfo
 	hold  <-chan struct{}
 }
-
-func (f *fakeModel) Info(_ context.Context) (*schema.ToolInfo, error) { return nil, nil }
 
 func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	if f.hold != nil {
@@ -68,6 +71,30 @@ func (f *fakeModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatMo
 	return f, nil
 }
 
+func (f *fakeModel) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeModel) toolCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.tools)
+}
+
+func (f *fakeModel) toolMessages() []*schema.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var messages []*schema.Message
+	for _, msg := range f.seen {
+		if msg.Role == schema.Tool {
+			messages = append(messages, msg)
+		}
+	}
+	return messages
+}
+
 func textChunks(s string) []*schema.Message {
 	words := strings.Split(s, " ")
 	out := make([]*schema.Message, len(words))
@@ -80,13 +107,11 @@ func textChunks(s string) []*schema.Message {
 	return out
 }
 
-func newTestAgent(t *testing.T, m *fakeModel) (*agent.Agent, *inmemory.Backend) {
+func newTestAgent(t *testing.T, m model.ToolCallingChatModel) (*agent.Agent, *inmemory.Backend) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{}
-	if err := cfg.Normalize(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cfg.Normalize())
 	cfg.Storage.Location = dir
 	backend := inmemory.New()
 	provider := tools.NewProvider(cfg, storage.NewWorkspaceFactory(dir), backend, nil)
@@ -102,7 +127,7 @@ func waitFinished(t *testing.T, done chan agent.Outcome) agent.Outcome {
 	case o := <-done:
 		return o
 	case <-time.After(5 * time.Second):
-		t.Fatal("run did not finish in time")
+		require.FailNow(t, "run did not finish in time")
 		return ""
 	}
 }
@@ -122,46 +147,58 @@ func TestRunStreamsAccumulatedContentAndFinishesCompleted(t *testing.T) {
 		},
 		OnFinishedF: func(o agent.Outcome) { done <- o },
 	}
-	if err := a.Fire(agent.NewRequest(agent.ChatScenario, "hi",
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "hi",
 		agent.WithRequestID("run-1"),
 		agent.WithIdentity("user-1", "chat-1", "p2p"),
 		agent.WithConversation("conv-1", "root-1", "msg-1"),
 		agent.WithListener(listener),
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if outcome := waitFinished(t, done); outcome != agent.OutcomeCompleted {
-		t.Fatalf("outcome = %s", outcome)
-	}
-	m.mu.Lock()
-	toolCount := len(m.tools)
-	m.mu.Unlock()
-	if toolCount == 0 {
-		t.Fatal("ToolCallingChatModel was not given the composed tools")
-	}
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+	assert.Positive(t, m.toolCount(), "ToolCallingChatModel was not given the composed tools")
 
 	// OnContent is accumulated: every callback is a prefix of the final.
 	mu.Lock()
 	defer mu.Unlock()
-	if len(contents) == 0 {
-		t.Fatal("no OnContent callbacks")
-	}
+	require.NotEmpty(t, contents, "no OnContent callbacks")
 	for _, c := range contents {
-		if !strings.HasPrefix("hello there, this is the answer ", c) && !strings.HasPrefix("hello there, this is the answer", c) {
-			t.Fatalf("non-accumulated content callback: %q", c)
-		}
+		assert.True(t,
+			strings.HasPrefix("hello there, this is the answer ", c) || strings.HasPrefix("hello there, this is the answer", c),
+			"non-accumulated content callback: %q", c)
 	}
 
 	// The conversation now holds the user message and the answer.
 	history, err := backend.Memory().Load(context.Background(), "conv-1", 0)
-	if err != nil || len(history) != 2 {
-		t.Fatalf("history = %d messages, err %v", len(history), err)
-	}
-	if history[0].Role != schema.User || history[0].Content != "hi" {
-		t.Fatalf("user message not persisted first: %+v", history[0])
-	}
-	if !strings.Contains(history[1].Content, "hello") {
-		t.Fatalf("assistant answer not persisted: %+v", history[1])
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	assert.Equal(t, schema.User, history[0].Role)
+	assert.Equal(t, "hi", history[0].Content)
+	assert.Contains(t, history[1].Content, "hello")
+}
+
+func TestRunReportsModelFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mocks.NewMockToolCallingChatModel(ctrl)
+	modelErr := errors.New("model unavailable")
+	m.EXPECT().WithTools(gomock.Any()).Return(m, nil)
+	m.EXPECT().Stream(gomock.Any(), gomock.Any()).Return(nil, modelErr)
+	a, _ := newTestAgent(t, m)
+
+	done := make(chan agent.Outcome, 1)
+	errs := make(chan error, 1)
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "hello",
+		agent.WithIdentity("user-error", "chat-error", "p2p"),
+		agent.WithListener(agent.ListenerFuncs{
+			OnErrorF:    func(err error) { errs <- err },
+			OnFinishedF: func(o agent.Outcome) { done <- o },
+		}),
+	)))
+
+	require.Equal(t, agent.OutcomeFailed, waitFinished(t, done))
+	select {
+	case err := <-errs:
+		require.ErrorIs(t, err, modelErr)
+	default:
+		require.FailNow(t, "model failure was not reported")
 	}
 }
 
@@ -181,34 +218,18 @@ func TestRunExecutesToolCallsAndContinues(t *testing.T) {
 	}}
 	a, _ := newTestAgent(t, m)
 	done := make(chan agent.Outcome, 1)
-	if err := a.Fire(agent.NewRequest(agent.ChatScenario, "what time is it?",
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "what time is it?",
 		agent.WithIdentity("user-2", "chat-2", "p2p"),
 		agent.WithConversation("conv-2", "root-2", "msg-2"),
 		agent.WithListener(agent.ListenerFuncs{OnFinishedF: func(o agent.Outcome) { done <- o }}),
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if outcome := waitFinished(t, done); outcome != agent.OutcomeCompleted {
-		t.Fatalf("outcome = %s", outcome)
-	}
-	if m.calls != 2 {
-		t.Fatalf("model called %d times, want 2 (tool loop did not continue)", m.calls)
-	}
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+	assert.Equal(t, 2, m.callCount(), "tool loop did not continue")
 	// The second call saw the tool result message.
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var toolMsgs []*schema.Message
-	for _, msg := range m.seen {
-		if msg.Role == schema.Tool {
-			toolMsgs = append(toolMsgs, msg)
-		}
-	}
-	if len(toolMsgs) != 1 || toolMsgs[0].ToolCallID != "call-1" {
-		t.Fatalf("tool result missing from the model's input: %d tool messages", len(toolMsgs))
-	}
-	if !strings.Contains(toolMsgs[0].Content, "dateTime") {
-		t.Fatalf("tool result does not look like the datetime output: %q", toolMsgs[0].Content)
-	}
+	toolMsgs := m.toolMessages()
+	require.Len(t, toolMsgs, 1)
+	assert.Equal(t, "call-1", toolMsgs[0].ToolCallID)
+	assert.Contains(t, toolMsgs[0].Content, "dateTime")
 }
 
 func TestCancelEndsRunCancelled(t *testing.T) {
@@ -220,19 +241,13 @@ func TestCancelEndsRunCancelled(t *testing.T) {
 	m.hold = release
 	a, _ := newTestAgent(t, m)
 	done := make(chan agent.Outcome, 1)
-	if err := a.Fire(agent.NewRequest(agent.ChatScenario, "slow thing",
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "slow thing",
 		agent.WithRequestID("cancel-me"),
 		agent.WithIdentity("user-3", "chat-3", "p2p"),
 		agent.WithListener(agent.ListenerFuncs{OnFinishedF: func(o agent.Outcome) { done <- o }}),
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Cancel("cancel-me") {
-		t.Fatal("cancel did not find the run")
-	}
-	if outcome := waitFinished(t, done); outcome != agent.OutcomeCancelled {
-		t.Fatalf("outcome = %s, want CANCELLED", outcome)
-	}
+	)))
+	require.True(t, a.Cancel("cancel-me"), "cancel did not find the run")
+	require.Equal(t, agent.OutcomeCancelled, waitFinished(t, done))
 	close(release)
 }
 
@@ -253,22 +268,16 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 	a, _ := newTestAgent(t, m)
 	a.Config.AI.Tools.AskUserQuestion.Enabled = true
 	done := make(chan agent.Outcome, 1)
-	if err := a.Fire(agent.NewRequest(agent.ChatScenario, "do the thing",
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "do the thing",
 		agent.WithIdentity("user-4", "chat-4", "p2p"),
 		agent.WithConversation("conv-4", "root-4", "msg-4"),
 		agent.WithListener(agent.ListenerFuncs{
 			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(inline) },
 			OnFinishedF: func(o agent.Outcome) { done <- o },
 		}),
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if outcome := waitFinished(t, done); outcome != agent.OutcomeCompleted {
-		t.Fatalf("sync ask outcome = %s", outcome)
-	}
-	if m.calls != 2 {
-		t.Fatalf("sync ask should continue the turn; model called %d times", m.calls)
-	}
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+	assert.Equal(t, 2, m.callCount(), "sync ask should continue the turn")
 
 	// Asynchronous: no answer inside the run; the turn ends at the ask.
 	pending := inmemory.New()
@@ -282,27 +291,20 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 	a2, _ := newTestAgent(t, m2)
 	a2.Config.AI.Tools.AskUserQuestion.Enabled = true
 	done2 := make(chan agent.Outcome, 1)
-	if err := a2.Fire(agent.NewRequest(agent.ChatScenario, "do the other thing",
+	require.NoError(t, a2.Fire(agent.NewRequest(agent.ChatScenario, "do the other thing",
 		agent.WithIdentity("user-5", "chat-5", "p2p"),
 		agent.WithConversation("conv-5", "root-5", "msg-5"),
 		agent.WithListener(agent.ListenerFuncs{
 			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(async) },
 			OnFinishedF: func(o agent.Outcome) { done2 <- o },
 		}),
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if outcome := waitFinished(t, done2); outcome != agent.OutcomeCompleted {
-		t.Fatalf("async ask outcome = %s", outcome)
-	}
-	if m2.calls != 1 {
-		t.Fatalf("async ask should end the turn; model called %d times", m2.calls)
-	}
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done2))
+	assert.Equal(t, 1, m2.callCount(), "async ask should end the turn")
 	// The pending question is recorded: the outstanding-ask guard's input.
 	pendingQuestions, err := pending.PendingQuestions().FindByConversationIDAndStatus(context.Background(), "conv-5", "PENDING")
-	if err != nil || len(pendingQuestions) != 1 {
-		t.Fatalf("async ask did not record a pending question: %d, err %v", len(pendingQuestions), err)
-	}
+	require.NoError(t, err)
+	require.Len(t, pendingQuestions, 1)
 }
 
 type inlineHandler struct{ answers map[string]string }
@@ -335,8 +337,6 @@ func pendingQuestion(questions []tools.Question) dao.PendingQuestion {
 func marshalQuestions(t *testing.T, q tools.Questions) string {
 	t.Helper()
 	data, err := json.Marshal(q)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(data)
 }

@@ -13,6 +13,8 @@ import (
 	redisstore "github.com/ishi-o/golem/store/redis"
 	"github.com/ishi-o/golem/test/daocontract"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type redisFixture struct {
@@ -36,14 +38,8 @@ func newRedisFixture(t *testing.T) *redisFixture {
 	}
 	prefix := fmt.Sprintf("golem:test:%d:", time.Now().UnixNano())
 	store, err := redisstore.New(client, redisstore.WithKeyPrefix(prefix))
-	if err != nil {
-		_ = client.Close()
-		t.Fatal(err)
-	}
-	if err := store.Migrate(ctx); err != nil {
-		_ = client.Close()
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(ctx))
 	return &redisFixture{client: client, store: store}
 }
 
@@ -57,9 +53,7 @@ func (f *redisFixture) Close() error { return f.client.Close() }
 func TestRedisPersistenceContract(t *testing.T) {
 	fixture := newRedisFixture(t)
 	defer func() {
-		if err := fixture.Close(); err != nil {
-			t.Errorf("close Redis: %v", err)
-		}
+		assert.NoError(t, fixture.Close())
 	}()
 	daocontract.Run(t, fixture)
 }

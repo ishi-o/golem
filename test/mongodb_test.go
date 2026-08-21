@@ -12,6 +12,8 @@ import (
 	"github.com/ishi-o/golem/core/dao"
 	mongostore "github.com/ishi-o/golem/store/mongodb"
 	"github.com/ishi-o/golem/test/daocontract"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type mongoFixture struct {
@@ -37,10 +39,7 @@ func newMongoFixture(t *testing.T) *mongoFixture {
 	if err != nil {
 		t.Skipf("MongoDB is unavailable: %v", err)
 	}
-	if err := store.Migrate(ctx); err != nil {
-		_ = client.Disconnect(context.Background())
-		t.Fatal(err)
-	}
+	require.NoError(t, store.Migrate(ctx))
 	return &mongoFixture{clientClose: func() error { return client.Disconnect(context.Background()) }, store: store}
 }
 
@@ -54,9 +53,7 @@ func (f *mongoFixture) Close() error { return f.clientClose() }
 func TestMongoPersistenceContract(t *testing.T) {
 	fixture := newMongoFixture(t)
 	defer func() {
-		if err := fixture.Close(); err != nil {
-			t.Errorf("close MongoDB: %v", err)
-		}
+		assert.NoError(t, fixture.Close())
 	}()
 	daocontract.Run(t, fixture)
 }
