@@ -15,6 +15,8 @@ use (
 	./connector/feishu
 	./core
 	./internal
+	./sandbox/docker
+	./sandbox/kubernetes
 	./store/mongodb
 	./store/redis
 	./store/sqlx
@@ -35,3 +37,7 @@ replace github.com/ishi-o/golem/store/sqlx v0.0.0 => ./store/sqlx
 replace github.com/ishi-o/golem/store/mongodb v0.0.0 => ./store/mongodb
 
 replace github.com/ishi-o/golem/store/redis v0.0.0 => ./store/redis
+
+replace github.com/ishi-o/golem/sandbox/docker v0.0.0 => ./sandbox/docker
+
+replace github.com/ishi-o/golem/sandbox/kubernetes v0.0.0 => ./sandbox/kubernetes

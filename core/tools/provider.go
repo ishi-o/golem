@@ -95,6 +95,26 @@ func (p *Provider) Register(t tool.InvokableTool, offers func(name string) bool)
 	p.registered = append(p.registered, RegisteredTool{Tool: t, Offers: offers})
 }
 
+// RegisterSandbox adds the common shell tools for one optional sandbox
+// backend. The backend remains owned by the application and should be closed
+// during application shutdown.
+func (p *Provider) RegisterSandbox(sandbox Sandbox, config SandboxToolsConfig) error {
+	if p == nil {
+		return fmt.Errorf("golem/tools: nil provider")
+	}
+	if config.Credentials == nil && p.Repos != nil {
+		config.Credentials = p.Repos.ShellCredentials()
+	}
+	registered, err := NewSandboxTools(sandbox, config)
+	if err != nil {
+		return err
+	}
+	for _, registeredTool := range registered {
+		p.Register(registeredTool, nil)
+	}
+	return nil
+}
+
 // ComposeRequest names what Compose needs from the run. ScenarioOffers is
 // the resolved Scenario.Offers of the request; the rest is identity and the
 // per-run handlers.

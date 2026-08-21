@@ -2,7 +2,7 @@
 # root. Keeping it explicit makes an adapter's dependency boundary visible in
 # the same place as the module list.
 
-MODULES := core internal store/sqlx store/mongodb store/redis connector/feishu app cmd test
+MODULES := core internal store/sqlx store/mongodb store/redis connector/feishu sandbox/docker sandbox/kubernetes app cmd test
 
 .DEFAULT_GOAL := build
 

@@ -31,6 +31,17 @@ const (
 
 	ToolNameTodoWrite = "TodoWrite"
 
+	ToolNameBash                  = "Bash"
+	ToolNameBashOutput            = "BashOutput"
+	ToolNameKillShell             = "KillShell"
+	ToolNameRestartShellContainer = "RestartShellContainer"
+	ToolNameRestartShellPod       = "RestartShellPod"
+	ToolNameRestartSandbox        = "RestartSandbox"
+
+	ToolNameSetCredential    = "SetCredential"
+	ToolNameListCredentials  = "ListCredentials"
+	ToolNameDeleteCredential = "DeleteCredential"
+
 	ToolNamePublishFile         = "PublishFile"
 	ToolNameUpdatePublishedFile = "UpdatePublishedFile"
 	ToolNameUnpublishFile       = "UnpublishFile"

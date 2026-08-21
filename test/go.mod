@@ -7,6 +7,8 @@ require (
 	github.com/ishi-o/golem/connector/feishu v0.0.0
 	github.com/ishi-o/golem/core v0.0.0
 	github.com/ishi-o/golem/internal v0.0.0
+	github.com/ishi-o/golem/sandbox/docker v0.0.0
+	github.com/ishi-o/golem/sandbox/kubernetes v0.0.0
 	github.com/ishi-o/golem/store/mongodb v0.0.0
 	github.com/ishi-o/golem/store/redis v0.0.0
 	github.com/ishi-o/golem/store/sqlx v0.0.0
@@ -14,4 +16,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/redis/go-redis/v9 v9.7.3
 	go.mongodb.org/mongo-driver v1.17.4
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
 )
