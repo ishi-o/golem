@@ -19,7 +19,6 @@ import (
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/dao"
-	"github.com/ishi-o/golem/core/dao/inmemory"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/tools"
 	"github.com/ishi-o/golem/test/mocks"
@@ -107,17 +106,19 @@ func textChunks(s string) []*schema.Message {
 	return out
 }
 
-func newTestAgent(t *testing.T, m model.ToolCallingChatModel) (*agent.Agent, *inmemory.Backend) {
+func newTestAgent(t *testing.T, m model.ToolCallingChatModel) (*agent.Agent, *sqlxFixture) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{}
 	require.NoError(t, cfg.Normalize())
 	cfg.Storage.Location = dir
-	backend := inmemory.New()
+	fixture := newSQLXFixture(t)
+	t.Cleanup(func() { require.NoError(t, fixture.Close()) })
+	backend := fixture.Backend()
 	provider := tools.NewProvider(cfg, storage.NewWorkspaceFactory(dir), backend, nil)
-	a := agent.New(m, backend.Memory(), provider, cfg)
+	a := agent.New(m, fixture.Memory(), provider, cfg)
 	a.Repos = backend
-	return a, backend
+	return a, fixture
 }
 
 // waitFinished blocks until the done channel fires or the test times out.
@@ -280,8 +281,8 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 	assert.Equal(t, 2, m.callCount(), "sync ask should continue the turn")
 
 	// Asynchronous: no answer inside the run; the turn ends at the ask.
-	pending := inmemory.New()
-	async := &asyncHandler{backend: pending}
+	pending := newSQLXFixture(t)
+	async := &asyncHandler{repo: pending.Backend().PendingQuestions()}
 	m2 := &fakeModel{turns: [][]*schema.Message{
 		{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
 			ID: "ask-2", Function: schema.FunctionCall{Name: tools.ToolNameAskUserQuestion, Arguments: marshalQuestions(t, questions)},
@@ -302,7 +303,7 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done2))
 	assert.Equal(t, 1, m2.callCount(), "async ask should end the turn")
 	// The pending question is recorded: the outstanding-ask guard's input.
-	pendingQuestions, err := pending.PendingQuestions().FindByConversationIDAndStatus(context.Background(), "conv-5", "PENDING")
+	pendingQuestions, err := pending.Backend().PendingQuestions().FindByConversationIDAndStatus(context.Background(), "conv-5", "PENDING")
 	require.NoError(t, err)
 	require.Len(t, pendingQuestions, 1)
 }
@@ -315,11 +316,11 @@ func (h *inlineHandler) Ask(_ context.Context, _ []tools.Question) (map[string]s
 
 func (h *inlineHandler) AnswersInline() bool { return true }
 
-type asyncHandler struct{ backend *inmemory.Backend }
+type asyncHandler struct{ repo dao.PendingQuestionRepo }
 
 func (h *asyncHandler) Ask(ctx context.Context, questions []tools.Question) (map[string]string, error) {
 	// The Feishu shape: persist the ask, present it, return nothing.
-	if err := h.backend.PendingQuestions().Save(ctx, pendingQuestion(questions)); err != nil {
+	if err := h.repo.Save(ctx, pendingQuestion(questions)); err != nil {
 		return nil, err
 	}
 	return map[string]string{}, nil

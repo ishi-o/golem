@@ -9,13 +9,11 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/ishi-o/golem/core/dao"
-	"github.com/ishi-o/golem/core/dao/inmemory"
 	"github.com/ishi-o/golem/core/tools"
 	kubesandbox "github.com/ishi-o/golem/sandbox/kubernetes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/api/batch/v1"
+	v1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -116,8 +114,9 @@ func TestSandboxToolsShareTheBackendIndependentShellProtocol(t *testing.T) {
 }
 
 func TestCredentialToolsNeverReturnValues(t *testing.T) {
-	backend := inmemoryBackend()
-	registered := tools.NewCredentialTools(backend, tools.ToolNameRestartSandbox)
+	fixture := newSQLXFixture(t)
+	t.Cleanup(func() { require.NoError(t, fixture.Close()) })
+	registered := tools.NewCredentialTools(fixture.Backend().ShellCredentials(), tools.ToolNameRestartSandbox)
 	ctx := tools.UserID.With(context.Background(), "user-credential")
 
 	set := findTool(t, registered, tools.ToolNameSetCredential)
@@ -127,10 +126,6 @@ func TestCredentialToolsNeverReturnValues(t *testing.T) {
 	result = invokeTool(t, list, ctx, `{}`)
 	assert.Contains(t, result, "API_TOKEN")
 	assert.NotContains(t, result, "secret-value")
-}
-
-func inmemoryBackend() dao.ShellCredentialRepo {
-	return inmemory.New().ShellCredentials()
 }
 
 func TestKubernetesSandboxReusesAndRemovesLabeledUserJobs(t *testing.T) {
