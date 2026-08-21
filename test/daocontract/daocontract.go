@@ -3,10 +3,10 @@
 // AbstractPersistenceBackendTest, which it subclassed once per backend with
 // a distinct owner id to avoid unique-constraint collisions.
 //
-// The suite is a library, not a test of this module: each backend module's
-// test package builds its fixture (a SQLite file, a Mongo container, a Redis
-// container) and calls Run. A behaviour that must hold for every backend
-// goes here, once, rather than into one backend's test.
+// The suite is a library, not a test of this module: the repository's central
+// ./test module builds each backend fixture (a SQLite file, a Mongo container,
+// a Redis container) and calls Run. A behaviour that must hold for every
+// backend goes here, once, rather than into an adapter package's test.
 package daocontract
 
 import (
@@ -119,7 +119,10 @@ func testMcpServerConfig(t *testing.T, f Fixture) {
 
 func testMcpServerConfigAccess(t *testing.T, f Fixture) {
 	ctx := context.Background()
-	owner, caller := f.Owner(), f.Owner()
+	owner := f.Owner()
+	// The caller owns the first server; the later f.Owner calls create the
+	// distinct owners whose servers are reachable only through sharing.
+	caller := owner
 	repo := f.Backend().McpServerConfigs()
 
 	mustSave(t, repo.Save(ctx, dao.McpServerConfig{ID: "own-1", OwnerID: owner, Name: "own", Transport: dao.McpTransportStreamableHTTP, URL: "https://a.test"}))

@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
+	"github.com/ishi-o/golem/core/dao"
 	"github.com/ishi-o/golem/core/dao/inmemory"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/tools"
@@ -27,23 +29,23 @@ type fakeModel struct {
 	calls int
 	seen  []*schema.Message
 	tools []*schema.ToolInfo
+	hold  <-chan struct{}
 }
 
 func (f *fakeModel) Info(_ context.Context) (*schema.ToolInfo, error) { return nil, nil }
 
-func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	if f.hold != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-f.hold:
+		}
+	}
 	f.mu.Lock()
 	f.calls++
 	f.seen = append(f.seen, input...)
 	f.mu.Unlock()
-	for _, o := range opts {
-		// Capture the offered tool info for assertions.
-		if info := optionTools(o); info != nil {
-			f.mu.Lock()
-			f.tools = info
-			f.mu.Unlock()
-		}
-	}
 	f.mu.Lock()
 	if len(f.turns) == 0 {
 		f.mu.Unlock()
@@ -52,27 +54,18 @@ func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, opts ..
 	turn := f.turns[0]
 	f.turns = f.turns[1:]
 	f.mu.Unlock()
-	chunks := make(chan *schema.Message, len(turn)+1)
-	for _, c := range turn {
-		chunks <- c
-	}
-	close(chunks)
-	return schema.ReaderFromChannel(chunks), nil
+	return schema.StreamReaderFromArray(turn), nil
 }
 
-func (f *fakeModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+func (f *fakeModel) Generate(ctx context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-// optionTools extracts the tool list an option carries. model.Option is
-// opaque, so the fake applies it to a scratch options struct via the
-// package's own getter.
-func optionTools(o model.Option) []*schema.ToolInfo {
-	common := model.GetCommonOptions(&model.Options{}, o)
-	if common != nil && common.Tools != nil {
-		return common.Tools
-	}
-	return nil
+func (f *fakeModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	f.mu.Lock()
+	f.tools = tools
+	f.mu.Unlock()
+	return f, nil
 }
 
 func textChunks(s string) []*schema.Message {
@@ -139,6 +132,12 @@ func TestRunStreamsAccumulatedContentAndFinishesCompleted(t *testing.T) {
 	}
 	if outcome := waitFinished(t, done); outcome != agent.OutcomeCompleted {
 		t.Fatalf("outcome = %s", outcome)
+	}
+	m.mu.Lock()
+	toolCount := len(m.tools)
+	m.mu.Unlock()
+	if toolCount == 0 {
+		t.Fatal("ToolCallingChatModel was not given the composed tools")
 	}
 
 	// OnContent is accumulated: every callback is a prefix of the final.
@@ -258,7 +257,7 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 		agent.WithIdentity("user-4", "chat-4", "p2p"),
 		agent.WithConversation("conv-4", "root-4", "msg-4"),
 		agent.WithListener(agent.ListenerFuncs{
-			OnStartF: func(r *agent.RunRegistry) { r.AddQuestionHandler(inline) },
+			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(inline) },
 			OnFinishedF: func(o agent.Outcome) { done <- o },
 		}),
 	)); err != nil {
@@ -287,7 +286,7 @@ func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {
 		agent.WithIdentity("user-5", "chat-5", "p2p"),
 		agent.WithConversation("conv-5", "root-5", "msg-5"),
 		agent.WithListener(agent.ListenerFuncs{
-			OnStartF: func(r *agent.RunRegistry) { r.AddQuestionHandler(async) },
+			OnStartF:    func(r *agent.RunRegistry) { r.AddQuestionHandler(async) },
 			OnFinishedF: func(o agent.Outcome) { done2 <- o },
 		}),
 	)); err != nil {
@@ -324,18 +323,18 @@ func (h *asyncHandler) Ask(ctx context.Context, questions []tools.Question) (map
 	return map[string]string{}, nil
 }
 
-func pendingQuestion(questions []tools.Question) dao_PendingQuestion {
+func pendingQuestion(questions []tools.Question) dao.PendingQuestion {
 	// (kept dumb on purpose: the model-phrased questions serialized)
-	return dao_PendingQuestion{
+	return dao.PendingQuestion{
 		ID:             "pq-test",
 		ConversationID: "conv-5",
-		Status:         "PENDING",
+		Status:         dao.PendingQuestionStatusPending,
 	}
 }
 
 func marshalQuestions(t *testing.T, q tools.Questions) string {
 	t.Helper()
-	data, err := json_Marshal(q)
+	data, err := json.Marshal(q)
 	if err != nil {
 		t.Fatal(err)
 	}
