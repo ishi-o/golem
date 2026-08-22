@@ -2,7 +2,7 @@
 # Sync sibling module versions after a release.
 #
 # The Go module proxy ignores go.work: a store/sqlx whose go.mod still
-# requires github.com/ishi-o/golem/core v0.0.0 cannot be `go get`-ed,
+# requires github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000 cannot be `go get`-ed,
 # because that revision does not exist. This script points every module's
 # sibling requires at the freshly tagged versions and tidies. The commit
 # arrives as a PR — main requires one — so nothing needs a branch-protection

@@ -14,13 +14,13 @@ import (
 )
 
 const (
-	sandboxEnv         = "GOLEM_SANDBOX" // "docker", "kubernetes", or unset (off)
-	sandboxImageEnv    = "GOLEM_SANDBOX_IMAGE"
-	sandboxNetworkEnv  = "GOLEM_SANDBOX_NETWORK"           // docker only
-	sandboxNamespaceEnv = "GOLEM_SANDBOX_NAMESPACE"        // kubernetes only
-	sandboxWorkingDirEnv = "GOLEM_SANDBOX_WORKING_DIR"     // kubernetes only
-	sandboxPVCEnv      = "GOLEM_SANDBOX_PVC"               // kubernetes only
-	sandboxPVCSubpathEnv = "GOLEM_SANDBOX_PVC_SUBPATH"     // kubernetes only
+	sandboxEnv           = "GOLEM_SANDBOX" // "docker", "kubernetes", or unset (off)
+	sandboxImageEnv      = "GOLEM_SANDBOX_IMAGE"
+	sandboxNetworkEnv    = "GOLEM_SANDBOX_NETWORK"     // docker only
+	sandboxNamespaceEnv  = "GOLEM_SANDBOX_NAMESPACE"   // kubernetes only
+	sandboxWorkingDirEnv = "GOLEM_SANDBOX_WORKING_DIR" // kubernetes only
+	sandboxPVCEnv        = "GOLEM_SANDBOX_PVC"         // kubernetes only
+	sandboxPVCSubpathEnv = "GOLEM_SANDBOX_PVC_SUBPATH" // kubernetes only
 )
 
 // newSandbox builds the sandbox backend GOLEM_SANDBOX selects, wired to the
