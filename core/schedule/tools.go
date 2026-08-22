@@ -1,13 +1,8 @@
-package service
+package schedule
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -18,24 +13,34 @@ import (
 )
 
 // Tools are the schedule tools: create, list, cancel. They are registered
-// with the provider and excluded from ScheduledTaskScenario runs (see
-// agent.ScheduledTaskScenario) — a firing must not schedule more work.
+// with the provider and excluded from ScheduledTaskScenario runs — a firing
+// must not schedule more work.
 type Tools struct {
-	service *TaskService
-	repos   store.Backend
+	runner *Runner
+	tasks  store.ScheduledTaskStore
 }
 
-// NewTools constructs the schedule tools.
-func NewTools(service *TaskService, repos store.Backend) *Tools {
-	return &Tools{service: service, repos: repos}
+// NewTools returns the tools over one runner and its task store, for
+// provider registration.
+func NewTools(r *Runner, tasks store.ScheduledTaskStore) *Tools {
+	return &Tools{runner: r, tasks: tasks}
 }
 
-// List returns the tools, for provider registration.
+// List lists the schedule tools, satisfying tools.Builtin.
 func (t *Tools) List() []tool.InvokableTool {
-	return []tool.InvokableTool{t.Create(), t.ListTasks(), t.Cancel()}
+	return []tool.InvokableTool{t.create(), t.listTasks(), t.cancel()}
 }
 
-func (t *Tools) Create() tool.InvokableTool {
+// RegisterBuiltins registers the schedule tools on the provider. The
+// SCHEDULED_TASK scenario excludes them by name, so a firing cannot schedule
+// more work.
+func RegisterBuiltins(p *tools.Provider, t *Tools) {
+	for _, tl := range t.List() {
+		p.Register(tl, nil)
+	}
+}
+
+func (t *Tools) create() tool.InvokableTool {
 	type input struct {
 		// TaskText is the prompt to run at firing time.
 		TaskText string `json:"taskText"`
@@ -59,6 +64,9 @@ func (t *Tools) Create() tool.InvokableTool {
 			chatType, _ := tools.ChatType.Get(ctx)
 			rootMessageID, _ := tools.RootMessageID.Get(ctx)
 
+			if t.runner.cfg.Scheduler == nil {
+				return "", fmt.Errorf("scheduled tasks are not configured in this deployment")
+			}
 			if (in.Cron == "") == (in.ScheduledAt == "") {
 				return "", fmt.Errorf("set exactly one of cron and scheduledAt")
 			}
@@ -72,14 +80,10 @@ func (t *Tools) Create() tool.InvokableTool {
 				Status:        store.ScheduledTaskStatusActive,
 			}
 			if in.Cron != "" {
-				normalized, err := normalizeCron(in.Cron)
-				if err != nil {
-					return "", err
-				}
-				if _, err := ParseCron(normalized); err != nil {
-					return "", err
-				}
-				task.CronExpression = normalized
+				// Verbatim: the injected scheduler is the expression's
+				// validator (Runner.Schedule arms before persisting, so an
+				// expression it rejects never becomes a task).
+				task.CronExpression = in.Cron
 			} else {
 				at, err := time.Parse(time.RFC3339, in.ScheduledAt)
 				if err != nil {
@@ -90,7 +94,7 @@ func (t *Tools) Create() tool.InvokableTool {
 			switch in.Expiry {
 			case "", "never":
 				if in.Expiry == "" {
-					task.ExpiresAt = time.Now().Add(t.service.config.DefaultExpiry)
+					task.ExpiresAt = time.Now().Add(t.runner.cfg.DefaultExpiry)
 				}
 			default:
 				d, err := time.ParseDuration(in.Expiry)
@@ -99,14 +103,14 @@ func (t *Tools) Create() tool.InvokableTool {
 				}
 				task.ExpiresAt = time.Now().Add(d)
 			}
-			if err := t.service.Schedule(task); err != nil {
+			if err := t.runner.Schedule(task); err != nil {
 				return "", err
 			}
 			return "scheduled task " + task.ID, nil
 		}))
 }
 
-func (t *Tools) ListTasks() tool.InvokableTool {
+func (t *Tools) listTasks() tool.InvokableTool {
 	type task struct {
 		ID      string `json:"id"`
 		Text    string `json:"text"`
@@ -124,7 +128,7 @@ func (t *Tools) ListTasks() tool.InvokableTool {
 			if err != nil {
 				return output{}, err
 			}
-			active, err := t.repos.ScheduledTasks().ListByUserAndStatus(ctx, userID, store.ScheduledTaskStatusActive)
+			active, err := t.tasks.ListByUserAndStatus(ctx, userID, store.ScheduledTaskStatusActive)
 			if err != nil {
 				return output{}, err
 			}
@@ -143,54 +147,25 @@ func (t *Tools) ListTasks() tool.InvokableTool {
 		}))
 }
 
-func (t *Tools) Cancel() tool.InvokableTool {
+func (t *Tools) cancel() tool.InvokableTool {
 	return tools.MustTool(utils.InferTool(tools.ToolNameCancelScheduledTask,
 		"Cancel one of the user's scheduled tasks by id. A firing in progress is stopped too.",
 		func(ctx context.Context, in struct {
 			TaskID string `json:"taskId"`
-		}) (string, error) {
+		},
+		) (string, error) {
 			userID, err := tools.UserID.Require(ctx)
 			if err != nil {
 				return "", err
 			}
-			task, err := t.repos.ScheduledTasks().Get(ctx, in.TaskID)
+			task, err := t.tasks.Get(ctx, in.TaskID)
 			if err != nil || task == nil || task.UserID != userID {
 				return "", fmt.Errorf("no scheduled task %s owned by you", in.TaskID)
 			}
-			t.service.Unschedule(in.TaskID)
-			if err := t.repos.ScheduledTasks().SetStatus(ctx, in.TaskID, store.ScheduledTaskStatusCancelled); err != nil {
+			t.runner.Unschedule(in.TaskID)
+			if err := t.tasks.SetStatus(ctx, in.TaskID, store.ScheduledTaskStatusCancelled); err != nil {
 				return "", err
 			}
 			return "cancelled task " + in.TaskID, nil
 		}))
-}
-
-// everySecondOrMinute matches the sub-minute cron forms the normalizer
-// rewrites: a */n in the minute field, or any seconds-looking prefix.
-var stepMinute = regexp.MustCompile(`^\*/(\d+)$`)
-
-// normalizeCron enforces a five-minute minimum interval: a task may not fire
-// more often than every five minutes. A model writing */1 or */2 in the
-// minute field gets */5 rather than a refusal.
-func normalizeCron(expr string) (string, error) {
-	fields := strings.Fields(expr)
-	if len(fields) != 5 {
-		// ParseCron reports the full error; nothing to normalize here.
-		return expr, nil
-	}
-	if m := stepMinute.FindStringSubmatch(fields[0]); m != nil {
-		if n, err := strconv.Atoi(m[1]); err == nil && n < 5 {
-			fields[0] = "*/5"
-		}
-	}
-	return strings.Join(fields, " "), nil
-}
-
-// newTaskID mints an unguessable task id.
-func newTaskID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("golem: cannot read random bytes for a task id: " + err.Error())
-	}
-	return hex.EncodeToString(b)
 }

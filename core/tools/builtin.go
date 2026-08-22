@@ -68,21 +68,53 @@ func MustTool(t tool.InvokableTool, err error) tool.InvokableTool {
 	return t
 }
 
-// mustTool is MustTool for this package's own built-ins.
-func mustTool(t tool.InvokableTool, err error) tool.InvokableTool {
-	return MustTool(t, err)
+// Builtin is a family of built-in tools exposed as one list. Every family —
+// single-tool ones included — implements it, so registration and Compose
+// treat them all the same way.
+type Builtin interface {
+	List() []tool.InvokableTool
 }
 
-// CurrentDateTime reports the wall clock. The default system prompt sends
+// Builtins names the process-wide built-in families to register. A nil
+// field means the family is not registered. The per-user families (file,
+// memory, skill, todo, ask, publish, clock) are not here: they are built
+// per run by Provider.Compose, which is their registration.
+type Builtins struct {
+	// Sandbox enables the shell and credential tools for one sandbox
+	// backend. SandboxConfig.Credentials is filled from the provider's
+	// store when nil.
+	Sandbox       Sandbox
+	SandboxConfig SandboxToolsConfig
+}
+
+// RegisterBuiltins constructs and registers every built-in family whose
+// dependencies are provided. Call it during application setup, before the
+// first Fire.
+func RegisterBuiltins(p *Provider, b Builtins) error {
+	if b.Sandbox == nil {
+		return nil
+	}
+	return p.RegisterSandbox(b.Sandbox, b.SandboxConfig)
+}
+
+// CurrentDateTimeTools is the clock tool. The default system prompt sends
 // the model here whenever an answer depends on "today" or "in two hours": a
 // model's sense of now is its training cutoff, which is never now.
-func CurrentDateTime() tool.InvokableTool {
+type CurrentDateTimeTools struct{}
+
+// NewCurrentDateTimeTools returns the clock tools.
+func NewCurrentDateTimeTools() *CurrentDateTimeTools {
+	return &CurrentDateTimeTools{}
+}
+
+// List lists the clock tools, satisfying Builtin.
+func (*CurrentDateTimeTools) List() []tool.InvokableTool {
 	type output struct {
 		DateTime string `json:"dateTime"`
 	}
-	return mustTool(utils.InferTool(ToolNameCurrentDateTime,
+	return []tool.InvokableTool{MustTool(utils.InferTool(ToolNameCurrentDateTime,
 		"Get the current date and time, with timezone. Call this whenever the answer depends on the current date or time, including relative expressions like today, this week or in two hours.",
 		func(ctx context.Context, _ struct{}) (output, error) {
 			return output{DateTime: time.Now().Format(time.RFC3339)}, nil
-		}))
+		}))}
 }

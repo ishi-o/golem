@@ -11,14 +11,13 @@ import (
 	"time"
 
 	"github.com/ishi-o/golem/app"
-	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/internal/bootstrap"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	cfg, err := config.Load()
+	cfg, err := bootstrap.Load()
 	if err != nil {
 		logger.Error("load configuration", "err", err)
 		os.Exit(1)

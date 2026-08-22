@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
+	"github.com/ishi-o/golem/core/schedule"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/tools"
 	sqlxstore "github.com/ishi-o/golem/store/sqlx"
@@ -33,13 +34,38 @@ const (
 // Runtime owns the resources created for an application process.
 type Runtime struct {
 	Agent *agent.Agent
-	db    *sqlx.DB
+	// Runner fires the user's scheduled tasks; nil when no scheduler was
+	// injected, in which case the schedule tools are not offered.
+	Runner *schedule.Runner
+	db     *sqlx.DB
+}
+
+// Option configures the runtime during construction.
+type Option func(*options)
+
+type options struct {
+	// Scheduler arms the scheduled tasks; core ships none, so an
+	// application wanting scheduled tasks wraps its scheduler library
+	// (gocron, robfig/cron, ...) in the schedule.Scheduler interface and
+	// passes it here.
+	scheduler schedule.Scheduler
+}
+
+// WithScheduler enables the scheduled-task feature over one scheduler.
+func WithScheduler(s schedule.Scheduler) Option {
+	return func(o *options) { o.scheduler = s }
 }
 
 // New creates the default runtime. The model uses the OpenAI-compatible
 // chat-completions protocol; OPENAI_BASE_URL may point at another compatible
 // service. SQLite is the deliberately boring default store for local apps.
-func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime, error) {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Option) (*Runtime, error) {
+	var o options
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -96,6 +122,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		agent.WithLogger(logger),
 		agent.WithModelName(modelName),
 	)
+	if o.scheduler != nil {
+		// The runner fires the agent, so it is built after it and stopped
+		// before it: Close must allow no new firing while old ones drain.
+		runner, err := schedule.New(backend.ScheduledTasks(), runtime.Agent, schedule.Config{
+			Prompt:    cfg.AI.ScheduledTaskPrompt,
+			Scheduler: o.scheduler,
+		}, logger)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create scheduler: %w", err)
+		}
+		if err := runner.Start(ctx); err != nil {
+			return nil, fmt.Errorf("bootstrap: start scheduler: %w", err)
+		}
+		schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledTasks()))
+		runtime.Runner = runner
+	}
 	return runtime, nil
 }
 
@@ -105,6 +147,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
+	if r.Runner != nil {
+		r.Runner.Stop()
+	}
 	if r.Agent != nil {
 		if err := r.Agent.Shutdown(ctx); err != nil {
 			errs = append(errs, err)

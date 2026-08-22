@@ -30,8 +30,8 @@ func NewMemoryTools(home *storage.UserHome) (*MemoryTools, error) {
 	return &MemoryTools{dir: dir}, nil
 }
 
-// Tools lists the memory tools.
-func (m *MemoryTools) Tools() []tool.InvokableTool {
+// List lists the memory tools, satisfying Builtin.
+func (m *MemoryTools) List() []tool.InvokableTool {
 	return []tool.InvokableTool{m.Read(), m.Write()}
 }
 
@@ -51,7 +51,7 @@ func (m *MemoryTools) Read() tool.InvokableTool {
 	type output struct {
 		Content string `json:"content"`
 	}
-	return mustTool(utils.InferTool(ToolNameReadMemory,
+	return MustTool(utils.InferTool(ToolNameReadMemory,
 		"Read a file from your memory about this user. Call MemoryView(\"MEMORY.md\") before replying to recall what you already know.",
 		func(ctx context.Context, in struct {
 			File string `json:"file,omitempty"`
@@ -77,7 +77,7 @@ func (m *MemoryTools) Read() tool.InvokableTool {
 
 // Write is MemoryWrite.
 func (m *MemoryTools) Write() tool.InvokableTool {
-	return mustTool(utils.InferTool(ToolNameWriteMemory,
+	return MustTool(utils.InferTool(ToolNameWriteMemory,
 		"Write a memory file about this user, replacing it whole. Keep MEMORY.md as the index of what you know; record durable facts, not conversation transcripts.",
 		func(ctx context.Context, in struct {
 			File    string `json:"file,omitempty"`
@@ -118,9 +118,9 @@ func NewSkillTools(home *storage.UserHome) (*SkillTools, error) {
 	return &SkillTools{dir: dir}, nil
 }
 
-// Tools lists the skill tools.
-func (s *SkillTools) Tools() []tool.InvokableTool {
-	return []tool.InvokableTool{s.List(), s.Read(), s.Write(), s.Delete()}
+// List lists the skill tools, satisfying Builtin.
+func (s *SkillTools) List() []tool.InvokableTool {
+	return []tool.InvokableTool{s.ListSkills(), s.Read(), s.Write(), s.Delete()}
 }
 
 func (s *SkillTools) resolve(name string) (string, error) {
@@ -131,8 +131,8 @@ func (s *SkillTools) resolve(name string) (string, error) {
 	return filepath.Join(s.dir, clean), nil
 }
 
-// List lists the skills with their descriptions.
-func (s *SkillTools) List() tool.InvokableTool {
+// ListSkills lists the skills with their descriptions.
+func (s *SkillTools) ListSkills() tool.InvokableTool {
 	type skill struct {
 		Name string `json:"name"`
 		Desc string `json:"description,omitempty"`
@@ -140,7 +140,7 @@ func (s *SkillTools) List() tool.InvokableTool {
 	type output struct {
 		Skills []skill `json:"skills"`
 	}
-	return mustTool(utils.InferTool(ToolNameListSkills,
+	return MustTool(utils.InferTool(ToolNameListSkills,
 		"List the user's skills, with the description each skill's SKILL.md carries.",
 		func(ctx context.Context, _ struct{}) (output, error) {
 			entries, err := os.ReadDir(s.dir)
@@ -172,7 +172,7 @@ func (s *SkillTools) Read() tool.InvokableTool {
 	type output struct {
 		Content string `json:"content"`
 	}
-	return mustTool(utils.InferTool(ToolNameReadSkillFile,
+	return MustTool(utils.InferTool(ToolNameReadSkillFile,
 		"Read a file inside one of the user's skills.",
 		func(ctx context.Context, in struct {
 			Skill string `json:"skill"`
@@ -192,7 +192,7 @@ func (s *SkillTools) Read() tool.InvokableTool {
 
 // Write writes a file inside a skill, creating the skill when new.
 func (s *SkillTools) Write() tool.InvokableTool {
-	return mustTool(utils.InferTool(ToolNameWriteSkill,
+	return MustTool(utils.InferTool(ToolNameWriteSkill,
 		"Write a file inside one of the user's skills, creating or replacing it whole. Create a skill's SKILL.md first; its first paragraph is what ListSkills shows.",
 		func(ctx context.Context, in struct {
 			Skill   string `json:"skill"`
@@ -215,7 +215,7 @@ func (s *SkillTools) Write() tool.InvokableTool {
 
 // Delete removes a whole skill.
 func (s *SkillTools) Delete() tool.InvokableTool {
-	return mustTool(utils.InferTool(ToolNameDeleteSkill,
+	return MustTool(utils.InferTool(ToolNameDeleteSkill,
 		"Delete one of the user's skills, entirely. This cannot be undone.",
 		func(ctx context.Context, in struct {
 			Skill string `json:"skill"`

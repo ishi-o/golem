@@ -108,6 +108,37 @@ func profileTool() tool.InvokableTool {
 provider.Register(profileTool(), nil)
 ```
 
+## Built-in tool families
+
+Every built-in family exposes its tools through one method:
+
+```go
+type Builtin interface {
+    List() []tool.InvokableTool
+}
+```
+
+The per-user families (file, memory, skill, todo, ask, publish, clock) are
+built per run by the provider's `Compose` — they need the run's workspace and
+handlers, so they are not registered. The process-wide families are
+registered in one call:
+
+```go
+err := golemtools.RegisterBuiltins(provider, golemtools.Builtins{
+    Sandbox:       dockerSandbox,
+    SandboxConfig: golemtools.SandboxToolsConfig{},
+})
+```
+
+## Scheduled tasks
+
+`core/schedule` persists tasks, reloads the ACTIVE ones at startup, and
+fires them at the agent. It ships no scheduler on purpose: the deployment
+wraps its scheduler library (gocron, robfig/cron, ...) in the
+`schedule.Scheduler` interface and injects it — see the `core/schedule`
+package doc for a robfig/cron adapter sketch. Without one, the schedule
+tools are not offered.
+
 ## Adding an mcp server
 
 The provider accepts an `MCPBuilder`, so a downstream connector can choose
@@ -170,9 +201,11 @@ path.
 
 ## Configuration
 
-The app and command bootstrap read the model and SQLite variables below.
-`core/config` reads the remaining `GOLEM_*` variables and applies sensible
-defaults:
+The app and command bootstrap reads the model, SQLite and `GOLEM_*`
+variables below and applies sensible defaults (`bootstrap.Load`; embedders
+populate the `core/config` structs from whatever source they like). The
+`GOLEM_TOOL_SEARCH_*` and `GOLEM_MCP_TRUSTED_HOSTS` variables are read but
+consumed by nothing yet — the tool-search and MCP integrations are unwired:
 
 | Variable                      | Purpose                                                |
 | ----------------------------- | ------------------------------------------------------ |

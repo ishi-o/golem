@@ -69,15 +69,25 @@ func fanOutTodos(handlers []TodoEventHandler) TodoEventHandler {
 	}
 }
 
-// TodoWrite is the plan tool. The whole list is replaced on every call: a
-// diffing protocol would make the model compute diffs, and the last call
-// before the final answer is what leaves no item in progress.
-func TodoWrite(handler TodoEventHandler) tool.InvokableTool {
+// TodoWriteTools is the plan tool. The whole list is replaced on every
+// call: a diffing protocol would make the model compute diffs, and the last
+// call before the final answer is what leaves no item in progress.
+type TodoWriteTools struct {
+	handler TodoEventHandler
+}
+
+// NewTodoWriteTools returns the plan tools over one run's todo handler.
+func NewTodoWriteTools(handler TodoEventHandler) *TodoWriteTools {
+	return &TodoWriteTools{handler: handler}
+}
+
+// List lists the plan tools, satisfying Builtin.
+func (t *TodoWriteTools) List() []tool.InvokableTool {
 	type item struct {
 		Content string     `json:"content"`
 		Status  TodoStatus `json:"status"`
 	}
-	return mustTool(utils.InferTool(ToolNameTodoWrite,
+	return []tool.InvokableTool{MustTool(utils.InferTool(ToolNameTodoWrite,
 		"Record or update the plan for the current task as a list of todo items with status pending, in_progress or completed. Each call replaces the whole list; call it before multi-step work and update items as you go. No item may be left in_progress in the final call.",
 		func(ctx context.Context, in struct {
 			Todos []item `json:"todos"`
@@ -98,9 +108,9 @@ func TodoWrite(handler TodoEventHandler) tool.InvokableTool {
 			if len(problems) > 0 {
 				return "", fmt.Errorf("%s", strings.Join(problems, "; "))
 			}
-			if handler != nil {
-				handler(ctx, event)
+			if t.handler != nil {
+				t.handler(ctx, event)
 			}
 			return fmt.Sprintf("%d todos recorded", len(event.Todos)), nil
-		}))
+		}))}
 }

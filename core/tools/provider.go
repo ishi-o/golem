@@ -21,6 +21,10 @@ import (
 //
 // Registration is process-wide and read per run; Compose is the only thing
 // that touches per-user state.
+//
+// This package must not import core/agent: the agent depends on the tools,
+// so the tools cannot depend back on it (the schedule feature lives in
+// core/schedule for exactly that reason).
 type Provider struct {
 	config     config.Config
 	workspaces *storage.WorkspaceFactory
@@ -133,8 +137,8 @@ func (p *Provider) RegisterSandbox(sandbox Sandbox, config SandboxToolsConfig) e
 	if err != nil {
 		return err
 	}
-	for _, registeredTool := range registered {
-		p.Register(registeredTool, nil)
+	for _, t := range registered.List() {
+		p.Register(t, nil)
 	}
 	return nil
 }
@@ -185,12 +189,17 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	copy(registered, p.registered)
 	p.mu.RUnlock()
 	for _, e := range registered {
-		if e.offers != nil && req.ScenarioOffers != nil {
+		if req.ScenarioOffers != nil {
 			info, err := e.tool.Info(ctx)
 			if err != nil || info == nil {
 				continue
 			}
+			// The scenario decides first; a registered offers is an
+			// additional restriction, not a bypass of the scenario's.
 			if !req.ScenarioOffers(info.Name) {
+				continue
+			}
+			if e.offers != nil && !e.offers(info.Name) {
 				continue
 			}
 		}
@@ -203,34 +212,35 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	if err != nil {
 		return nil, err
 	}
-	tools = append(tools, fs.Tools()...)
+	tools = append(tools, fs.List()...)
 
 	memories, err := NewMemoryTools(home)
 	if err != nil {
 		return nil, err
 	}
-	tools = append(tools, memories.Tools()...)
+	tools = append(tools, memories.List()...)
 
 	skills, err := NewSkillTools(home)
 	if err != nil {
 		return nil, err
 	}
-	tools = append(tools, skills.Tools()...)
+	tools = append(tools, skills.List()...)
 
-	tools = append(tools, CurrentDateTime(), TodoWrite(req.TodoHandler))
+	tools = append(tools, NewCurrentDateTimeTools().List()...)
+	tools = append(tools, NewTodoWriteTools(req.TodoHandler).List()...)
 
 	// Publish needs the resource repo; a provider configured without persistence
 	// (a test harness, say) simply does not offer it.
 	if p.repos != nil {
 		publish := NewPublishFileTools(p.repos.PublishedResources(), storage.NewFileSystem(p.config.Storage.Location), home, p.config.AI.Tools.PublishFile.BaseURL)
-		tools = append(tools, publish.Tools()...)
+		tools = append(tools, publish.List()...)
 	}
 
 	if req.Questions != nil && req.AskEnabled {
-		tools = append(tools, AskUserQuestion(req.Questions, AskOptions{
+		tools = append(tools, NewAskUserQuestionTools(req.Questions, AskOptions{
 			AnswersArriveLater: req.AnswersArriveLater,
 			AskedMessage:       req.AskedMessage,
-		}))
+		}).List()...)
 	}
 
 	comp := &Composition{Close: func() {}}
