@@ -35,6 +35,10 @@ on:
       - 'release-please-config.json'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
@@ -66,8 +70,12 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: go
-      - run: make build
+          build-mode: ${{ github.event_name == 'pull_request' && 'none' || 'manual' }}
+      - if: github.event_name == 'push'
+        run: make build
       - uses: github/codeql-action/analyze@v3
+        with:
+          queries: ${{ github.event_name == 'pull_request' && 'security-and-quality' || 'security-extended' }}
 
   release:
     if: github.event_name == 'push'
