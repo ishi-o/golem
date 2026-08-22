@@ -48,19 +48,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
-      - run: make check
-
-  build:
-    runs-on: ubuntu-latest
-    needs: checks
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-go
       - run: make build
+      - run: make check
 
   test:
     runs-on: ubuntu-latest
-    needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
@@ -77,22 +69,21 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: go
-          build-mode: manual
       - run: make build
       - uses: github/codeql-action/analyze@v3
 
   release:
     if: github.event_name == 'push'
-    needs: [build, check, test, codeql]
+    needs: [check, test, codeql]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-go
         with:
           ref: main
+      - uses: ./.github/actions/setup-go
       - uses: googleapis/release-please-action@v4
         id: release
         with:
