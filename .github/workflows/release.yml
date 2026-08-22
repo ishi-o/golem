@@ -1,0 +1,129 @@
+name: release
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - 'Makefile'
+      - 'script/**'
+      - '.github/**'
+      - 'CHANGELOG.md'
+      - '**/CHANGELOG.md'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - 'Makefile'
+      - 'script/**'
+      - '.github/**'
+      - 'CHANGELOG.md'
+      - '**/CHANGELOG.md'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/action/setup-go
+      - run: make build
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/action/setup-go
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/action/setup-go
+      - run: make test
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/action/setup-go
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          build-mode: none
+      - uses: github/codeql-action/analyze@v3
+
+  release:
+    if: github.event_name == 'push'
+    needs: [build, lint, test, codeql]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: ./.github/action/setup-go
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: go
+          path: core
+          package-name: github.com/ishi-o/golem/core
+          extra-components: |
+            - path: store/sqlx
+              release-type: go
+              package-name: github.com/ishi-o/golem/store/sqlx
+            - path: store/mongodb
+              release-type: go
+              package-name: github.com/ishi-o/golem/store/mongodb
+            - path: store/redis
+              release-type: go
+              package-name: github.com/ishi-o/golem/store/redis
+            - path: sandbox/docker
+              release-type: go
+              package-name: github.com/ishi-o/golem/sandbox/docker
+            - path: sandbox/kubernetes
+              release-type: go
+              package-name: github.com/ishi-o/golem/sandbox/kubernetes
+            - path: connector/feishu
+              release-type: go
+              package-name: github.com/ishi-o/golem/connector/feishu
+      - name: Sync sibling module versions
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          PATHS: ${{ steps.release.outputs.paths }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash script/sync-module-versions.sh
+      - name: Package the released modules
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          PATHS: ${{ steps.release.outputs.paths }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash script/package-modules.sh

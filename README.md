@@ -36,3 +36,4 @@ an env-selected shell sandbox (docker or kubernetes). →
 | [CLI](docs/cli.md)                         | The out-of-the-box command-line client                                               |
 | [HTTP service](docs/http-service.md)       | The out-of-the-box HTTP server and its endpoints                                     |
 | [Extending](docs/extending.md)             | Custom tools, MCP servers, todo and question handlers, connectors                    |
+| [Feishu connector](docs/feishu.md)         | The optional Feishu/Lark chat surface                                                |
