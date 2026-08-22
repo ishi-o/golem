@@ -35,9 +35,6 @@ on:
       - 'release-please-config.json'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
