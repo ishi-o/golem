@@ -136,8 +136,10 @@ err := golemtools.RegisterBuiltins(provider, golemtools.Builtins{
 fires them at the agent. It ships no scheduler on purpose: the deployment
 wraps its scheduler library (gocron, robfig/cron, ...) in the
 `schedule.Scheduler` interface and injects it — see the `core/schedule`
-package doc for a robfig/cron adapter sketch. Without one, the schedule
-tools are not offered.
+package doc for a robfig/cron adapter sketch. The injected scheduler is
+also the sole validator of cron expressions (golem parses nothing; a
+deployment wanting a minimum firing interval enforces it in its adapter).
+Without a scheduler, the schedule tools are not offered.
 
 ## Adding an mcp server
 
@@ -225,3 +227,10 @@ consumed by nothing yet — the tool-search and MCP integrations are unwired:
 | `GOLEM_TOOL_SEARCH_RESULTS`   | Maximum results returned by tool search                |
 | `GOLEM_TOOL_SEARCH_THRESHOLD` | Tool count at which tool search is enabled             |
 | `GOLEM_MCP_TRUSTED_HOSTS`     | Comma-separated MCP host allowlist                     |
+| `GOLEM_SANDBOX`               | Shell sandbox backend: `docker`, `kubernetes`, or unset (no shell tools) |
+| `GOLEM_SANDBOX_IMAGE`         | Sandbox container image (required when a backend is set) |
+| `GOLEM_SANDBOX_NETWORK`       | Docker network for sandbox containers (docker only)    |
+| `GOLEM_SANDBOX_NAMESPACE`     | Kubernetes namespace for sandbox Jobs (defaults to `default`) |
+| `GOLEM_SANDBOX_WORKING_DIR`   | Kubernetes working directory, the PVC mount path (kubernetes only) |
+| `GOLEM_SANDBOX_PVC`           | Kubernetes PVC holding user workspaces (kubernetes only) |
+| `GOLEM_SANDBOX_PVC_SUBPATH`   | Optional per-user subpath prefix in the PVC (kubernetes only) |

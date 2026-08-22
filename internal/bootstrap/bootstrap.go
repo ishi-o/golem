@@ -37,7 +37,11 @@ type Runtime struct {
 	// Runner fires the user's scheduled tasks; nil when no scheduler was
 	// injected, in which case the schedule tools are not offered.
 	Runner *schedule.Runner
-	db     *sqlx.DB
+	// sandbox is the env-selected shell sandbox (GOLEM_SANDBOX); nil when
+	// off. The Docker backend's Close removes its containers; the
+	// Kubernetes one owns Job lifetime and closes as a no-op.
+	sandbox tools.Sandbox
+	db      *sqlx.DB
 }
 
 // Option configures the runtime during construction.
@@ -113,6 +117,18 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 	workspaces := storage.NewWorkspaceFactory(cfg.Storage.Location)
 	provider := tools.NewProvider(cfg, workspaces, backend, nil, tools.WithLogger(logger))
 	runtime := &Runtime{db: db}
+	sandbox, sandboxTools, err := newSandbox(backend, workspaces, logger)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if sandbox != nil {
+		if err := tools.RegisterBuiltins(provider, tools.Builtins{Sandbox: sandbox, SandboxConfig: sandboxTools}); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("bootstrap: register sandbox tools: %w", err)
+		}
+		runtime.sandbox = sandbox
+	}
 	runtime.Agent = agent.New(
 		chatModel,
 		backend,
@@ -152,6 +168,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 	}
 	if r.Agent != nil {
 		if err := r.Agent.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if r.sandbox != nil {
+		if err := r.sandbox.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
