@@ -89,17 +89,28 @@ type AskOptions struct {
 	AskedMessage string
 }
 
-// AskUserQuestion is the ask tool: the model's one way to put questions to
-// the person behind the run.
-func AskUserQuestion(handler QuestionHandler, opts AskOptions) tool.InvokableTool {
+// AskUserQuestionTools is the ask tool: the model's one way to put
+// questions to the person behind the run.
+type AskUserQuestionTools struct {
+	handler QuestionHandler
+	opts    AskOptions
+}
+
+// NewAskUserQuestionTools returns the ask tools over one run's handler.
+func NewAskUserQuestionTools(handler QuestionHandler, opts AskOptions) *AskUserQuestionTools {
+	return &AskUserQuestionTools{handler: handler, opts: opts}
+}
+
+// List lists the ask tools, satisfying Builtin.
+func (a *AskUserQuestionTools) List() []tool.InvokableTool {
 	type input = Questions
-	return mustTool(utils.InferTool(ToolNameAskUserQuestion,
+	return []tool.InvokableTool{MustTool(utils.InferTool(ToolNameAskUserQuestion,
 		"Ask the user questions and get their answers. Use this before any action you cannot undo: deleting or overwriting something, reaching someone outside the conversation, or changing a live production system. Put the safest option first and say plainly what would be lost.",
 		func(ctx context.Context, in input) (string, error) {
 			if len(in.Questions) == 0 {
 				return "", fmt.Errorf("no questions to ask")
 			}
-			answers, err := handler.Ask(ctx, in.Questions)
+			answers, err := a.handler.Ask(ctx, in.Questions)
 			if err != nil {
 				return "", err
 			}
@@ -107,11 +118,11 @@ func AskUserQuestion(handler QuestionHandler, opts AskOptions) tool.InvokableToo
 				// Presented, but the answers can only arrive in a future
 				// run. The result doubles as the next run's history entry,
 				// so it is written as instructions to that run.
-				message := opts.AskedMessage
+				message := a.opts.AskedMessage
 				if message == "" {
 					message = "The questions are now with the user. This turn ends here; you will be started again with the answers."
 				}
-				if opts.AnswersArriveLater {
+				if a.opts.AnswersArriveLater {
 					return endTurnPrefix + message, nil
 				}
 				return message, nil
@@ -119,13 +130,13 @@ func AskUserQuestion(handler QuestionHandler, opts AskOptions) tool.InvokableToo
 			var b strings.Builder
 			b.WriteString("The user answered:\n")
 			for _, q := range in.Questions {
-				if a, ok := answers[q.Question]; ok {
-					fmt.Fprintf(&b, "- %s: %s\n", q.Question, a)
+				if answer, ok := answers[q.Question]; ok {
+					fmt.Fprintf(&b, "- %s: %s\n", q.Question, answer)
 				}
 			}
-			if opts.AnswersArriveLater {
+			if a.opts.AnswersArriveLater {
 				return endTurnPrefix + b.String(), nil
 			}
 			return b.String(), nil
-		}))
+		}))}
 }

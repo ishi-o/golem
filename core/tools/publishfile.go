@@ -42,8 +42,8 @@ func NewPublishFileTools(repos store.PublishedResourceStore, store storage.Stora
 	return &PublishFileTools{repos: repos, storage: store, workspace: workspace, baseURL: baseURL, clock: time.Now}
 }
 
-// Tools lists the publish tools.
-func (p *PublishFileTools) Tools() []tool.InvokableTool {
+// List lists the publish tools, satisfying Builtin.
+func (p *PublishFileTools) List() []tool.InvokableTool {
 	return []tool.InvokableTool{p.Publish(), p.Update(), p.Unpublish(), p.Renew()}
 }
 
@@ -113,7 +113,7 @@ func (p *PublishFileTools) Publish() tool.InvokableTool {
 		// EntryFilename is the file a directory publish serves at its root.
 		EntryFilename string `json:"entryFilename,omitempty"`
 	}
-	return mustTool(utils.InferTool(ToolNamePublishFile,
+	return MustTool(utils.InferTool(ToolNamePublishFile,
 		"Publish a workspace file or directory and get a link to it. Visibility INTERNAL or PUBLIC (default PUBLIC); ttl is a duration like 24h.",
 		func(ctx context.Context, in input) (string, error) {
 			userID, err := UserID.Require(ctx)
@@ -181,7 +181,7 @@ func (p *PublishFileTools) Update() tool.InvokableTool {
 		// re-copies the same path and extends nothing.
 		Mode string `json:"mode,omitempty"`
 	}
-	return mustTool(utils.InferTool(ToolNameUpdatePublishedFile,
+	return MustTool(utils.InferTool(ToolNameUpdatePublishedFile,
 		"Replace the content behind a published link (mode replace) or re-copy the file it points at (mode refresh), keeping the same link.",
 		func(ctx context.Context, in input) (string, error) {
 			userID, err := UserID.Require(ctx)
@@ -212,7 +212,7 @@ func (p *PublishFileTools) Update() tool.InvokableTool {
 
 // Unpublish removes a link.
 func (p *PublishFileTools) Unpublish() tool.InvokableTool {
-	return mustTool(utils.InferTool(ToolNameUnpublishFile,
+	return MustTool(utils.InferTool(ToolNameUnpublishFile,
 		"Remove a published link. The link stops working immediately; the workspace file is untouched.",
 		func(ctx context.Context, in struct {
 			Token string `json:"token"`
@@ -241,7 +241,7 @@ func (p *PublishFileTools) Renew() tool.InvokableTool {
 		Token string `json:"token"`
 		TTL   string `json:"ttl"`
 	}
-	return mustTool(utils.InferTool(ToolNameRenewPublishedFile,
+	return MustTool(utils.InferTool(ToolNameRenewPublishedFile,
 		"Extend a published link's life by a duration like 24h.",
 		func(ctx context.Context, in input) (string, error) {
 			userID, err := UserID.Require(ctx)

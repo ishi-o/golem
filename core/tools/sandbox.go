@@ -75,21 +75,30 @@ func (c *SandboxToolsConfig) normalize() error {
 	return nil
 }
 
-// NewSandboxTools creates the common Bash, BashOutput, KillShell and restart
+// SandboxTools are the common Bash, BashOutput, KillShell and restart
 // tools. Credential tools are included when a repository is supplied.
-func NewSandboxTools(sandbox Sandbox, config SandboxToolsConfig) ([]tool.InvokableTool, error) {
+type SandboxTools struct {
+	state *sandboxTools
+}
+
+// NewSandboxTools creates the shell tools for one sandbox backend.
+func NewSandboxTools(sandbox Sandbox, config SandboxToolsConfig) (*SandboxTools, error) {
 	if sandbox == nil {
 		return nil, errors.New("sandbox tools: nil sandbox")
 	}
 	if err := config.normalize(); err != nil {
 		return nil, err
 	}
-	state := &sandboxTools{backend: sandbox, config: config}
-	result := []tool.InvokableTool{state.bash(), state.bashOutput(), state.killShell(), state.restart()}
-	if config.Credentials != nil {
-		result = append(result, NewCredentialTools(config.Credentials, config.RestartToolName)...)
+	return &SandboxTools{state: &sandboxTools{backend: sandbox, config: config}}, nil
+}
+
+// List lists the shell tools, satisfying Builtin.
+func (s *SandboxTools) List() []tool.InvokableTool {
+	result := []tool.InvokableTool{s.state.bash(), s.state.bashOutput(), s.state.killShell(), s.state.restart()}
+	if s.state.config.Credentials != nil {
+		result = append(result, NewCredentialTools(s.state.config.Credentials, s.state.config.RestartToolName).List()...)
 	}
-	return result, nil
+	return result
 }
 
 // CredentialsFromRepository adapts the persistence contract for a sandbox
@@ -141,7 +150,7 @@ type bashInput struct {
 }
 
 func (s *sandboxTools) bash() tool.InvokableTool {
-	return mustTool(utils.InferTool(
+	return MustTool(utils.InferTool(
 		ToolNameBash,
 		`Execute a bash command for terminal operations such as npm, docker, make, mvn or python.
 
@@ -190,7 +199,7 @@ type bashOutputInput struct {
 }
 
 func (s *sandboxTools) bashOutput() tool.InvokableTool {
-	return mustTool(utils.InferTool(
+	return MustTool(utils.InferTool(
 		ToolNameBashOutput,
 		`Retrieve output from a running or completed background bash shell.
 - Always returns only new output since the last check.
@@ -237,7 +246,7 @@ func (s *sandboxTools) bashOutput() tool.InvokableTool {
 }
 
 func (s *sandboxTools) killShell() tool.InvokableTool {
-	return mustTool(utils.InferTool(
+	return MustTool(utils.InferTool(
 		ToolNameKillShell,
 		`Kill a running background bash shell by its bash_id and return its status.`,
 		func(ctx context.Context, in struct {
@@ -279,7 +288,7 @@ func (s *sandboxTools) restart() tool.InvokableTool {
 - Use after changing a credential so the next Bash call sees the new value.
 - Background shells and files outside the persistent working directory are lost.
 - The next Bash call creates a fresh sandbox when no sandbox is running.`)
-	return mustTool(utils.InferTool(
+	return MustTool(utils.InferTool(
 		name,
 		description,
 		func(ctx context.Context, _ struct{}) (string, error) {
@@ -474,17 +483,33 @@ func minInt(a, b int) int {
 	return b
 }
 
-// NewCredentialTools creates the three tools that manage credentials without
-// ever returning a stored value to the model.
-func NewCredentialTools(repo store.ShellCredentialStore, restartToolName string) []tool.InvokableTool {
+// CredentialTools are the three tools that manage credentials without ever
+// returning a stored value to the model.
+type CredentialTools struct {
+	repo            store.ShellCredentialStore
+	restartToolName string
+}
+
+// NewCredentialTools creates the credential tools over one repository. A
+// nil repository yields a family whose List is empty.
+func NewCredentialTools(repo store.ShellCredentialStore, restartToolName string) *CredentialTools {
 	if repo == nil {
-		return nil
+		return &CredentialTools{}
 	}
 	if restartToolName == "" {
 		restartToolName = ToolNameRestartSandbox
 	}
+	return &CredentialTools{repo: repo, restartToolName: restartToolName}
+}
+
+// List lists the credential tools, satisfying Builtin.
+func (c *CredentialTools) List() []tool.InvokableTool {
+	if c.repo == nil {
+		return nil
+	}
+	repo, restartToolName := c.repo, c.restartToolName
 	return []tool.InvokableTool{
-		mustTool(utils.InferTool(
+		MustTool(utils.InferTool(
 			ToolNameSetCredential,
 			"Store a credential for the user's shell sandbox. The name becomes an environment variable and the value is never returned.",
 			func(ctx context.Context, in struct {
@@ -507,7 +532,7 @@ func NewCredentialTools(repo store.ShellCredentialStore, restartToolName string)
 				return "Credential " + in.Name + " stored. Run " + restartToolName + " to expose it in the next sandbox.", nil
 			},
 		)),
-		mustTool(utils.InferTool(
+		MustTool(utils.InferTool(
 			ToolNameListCredentials,
 			"List the names of the user's shell credentials. Values are never returned.",
 			func(ctx context.Context, _ struct{}) (string, error) {
@@ -533,7 +558,7 @@ func NewCredentialTools(repo store.ShellCredentialStore, restartToolName string)
 				return strings.TrimRight(b.String(), "\n"), nil
 			},
 		)),
-		mustTool(utils.InferTool(
+		MustTool(utils.InferTool(
 			ToolNameDeleteCredential,
 			"Remove a credential from the user's shell sandbox. Restart the sandbox afterwards so it disappears from the environment.",
 			func(ctx context.Context, in struct {

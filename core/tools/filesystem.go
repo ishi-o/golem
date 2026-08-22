@@ -34,10 +34,9 @@ func NewFileSystemTools(home *storage.UserHome) (*FileSystemTools, error) {
 	return &FileSystemTools{home: storage.NewUserHome(ws)}, nil
 }
 
-// Tools lists the file tools. Returned as a slice because the provider
-// appends them to the run's set.
-func (f *FileSystemTools) Tools() []tool.InvokableTool {
-	return []tool.InvokableTool{f.Read(), f.Write(), f.List(), f.Grep()}
+// List lists the file tools, satisfying Builtin.
+func (f *FileSystemTools) List() []tool.InvokableTool {
+	return []tool.InvokableTool{f.Read(), f.Write(), f.ListFiles(), f.Grep()}
 }
 
 // resolve keeps every path inside the workspace root.
@@ -66,7 +65,7 @@ func (f *FileSystemTools) Read() tool.InvokableTool {
 		Content string `json:"content"`
 		Total   int    `json:"totalLines"`
 	}
-	return mustTool(utils.InferTool(ToolNameReadFile,
+	return MustTool(utils.InferTool(ToolNameReadFile,
 		"Read a file from the workspace. Returns its content; offset and limit select a range of lines.",
 		func(ctx context.Context, in input) (output, error) {
 			path, err := f.resolve(in.Path)
@@ -99,7 +98,7 @@ func (f *FileSystemTools) Write() tool.InvokableTool {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
-	return mustTool(utils.InferTool(ToolNameWriteFile,
+	return MustTool(utils.InferTool(ToolNameWriteFile,
 		"Write a file in the workspace, creating or replacing it whole. Parent directories are created.",
 		func(ctx context.Context, in input) (string, error) {
 			path, err := f.resolve(in.Path)
@@ -116,8 +115,8 @@ func (f *FileSystemTools) Write() tool.InvokableTool {
 		}))
 }
 
-// List lists a directory, files first at one level, with sizes.
-func (f *FileSystemTools) List() tool.InvokableTool {
+// ListFiles lists a directory, files first at one level, with sizes.
+func (f *FileSystemTools) ListFiles() tool.InvokableTool {
 	type entry struct {
 		Name string `json:"name"`
 		Dir  bool   `json:"dir"`
@@ -126,7 +125,7 @@ func (f *FileSystemTools) List() tool.InvokableTool {
 	type output struct {
 		Entries []entry `json:"entries"`
 	}
-	return mustTool(utils.InferTool(ToolNameListFiles,
+	return MustTool(utils.InferTool(ToolNameListFiles,
 		"List the files and subdirectories of a directory in the workspace.",
 		func(ctx context.Context, in struct {
 			Path string `json:"path"`
@@ -166,7 +165,7 @@ func (f *FileSystemTools) Grep() tool.InvokableTool {
 	type output struct {
 		Matches []match `json:"matches"`
 	}
-	return mustTool(utils.InferTool(ToolNameGrepFiles,
+	return MustTool(utils.InferTool(ToolNameGrepFiles,
 		"Search for a regular expression in the files under a workspace directory. Returns file, line number and line text.",
 		func(ctx context.Context, in input) (output, error) {
 			re, err := regexp.Compile(in.Pattern)

@@ -1,12 +1,10 @@
 module github.com/ishi-o/golem/internal
 
-go 1.26
+go 1.18
 
 require (
 	github.com/cloudwego/eino v0.9.15
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
-	github.com/ishi-o/golem/core v0.0.0
-	github.com/ishi-o/golem/store/sqlx v0.0.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mattn/go-sqlite3 v1.14.22
 )
@@ -33,7 +31,7 @@ require (
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/rogpeppe/go-internal v1.16.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
