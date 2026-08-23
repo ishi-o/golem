@@ -62,10 +62,12 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
       - uses: github/codeql-action/init@v3
         with:
           languages: go
-          build-mode: none
+          build-mode: manual
+      - run: make build
       - uses: github/codeql-action/analyze@v3
         with:
           queries: ${{ github.event_name == 'pull_request' && 'security' || 'security-extended' }}
