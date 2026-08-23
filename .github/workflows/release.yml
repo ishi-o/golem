@@ -69,9 +69,9 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: go
+          build-mode: manual
+      - run: make build
       - uses: github/codeql-action/analyze@v3
-        with:
-          queries: ${{ github.event_name == 'pull_request' && 'security' || 'security-extended' }}
 
   release:
     if: github.event_name == 'push'
