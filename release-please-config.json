@@ -1,0 +1,28 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"release-type": "go",
+	"include-component-in-tag": true,
+	"packages": {
+		"core": {
+			"package-name": "github.com/ishi-o/golem/core"
+		},
+		"store/sqlx": {
+			"package-name": "github.com/ishi-o/golem/store/sqlx"
+		},
+		"store/mongodb": {
+			"package-name": "github.com/ishi-o/golem/store/mongodb"
+		},
+		"store/redis": {
+			"package-name": "github.com/ishi-o/golem/store/redis"
+		},
+		"sandbox/docker": {
+			"package-name": "github.com/ishi-o/golem/sandbox/docker"
+		},
+		"sandbox/kubernetes": {
+			"package-name": "github.com/ishi-o/golem/sandbox/kubernetes"
+		},
+		"connector/feishu": {
+			"package-name": "github.com/ishi-o/golem/connector/feishu"
+		}
+	}
+}
