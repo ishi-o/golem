@@ -2,10 +2,8 @@ module github.com/ishi-o/golem/sandbox/docker
 
 go 1.24
 
-replace github.com/ishi-o/golem/core => ../../core
-
 require (
-	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
+	github.com/ishi-o/golem/core v0.2.1
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.1
 )

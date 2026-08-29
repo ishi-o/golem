@@ -59,12 +59,12 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
-	github.com/ishi-o/golem/connector/feishu v0.0.0-00010101000000-000000000000
-	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
-	github.com/ishi-o/golem/sandbox/kubernetes v0.0.0-00010101000000-000000000000
-	github.com/ishi-o/golem/store/mongodb v0.0.0-00010101000000-000000000000
-	github.com/ishi-o/golem/store/redis v0.0.0-00010101000000-000000000000
-	github.com/ishi-o/golem/store/sqlx v0.0.0-00010101000000-000000000000
+	github.com/ishi-o/golem/connector/feishu v0.2.1
+	github.com/ishi-o/golem/core v0.2.1
+	github.com/ishi-o/golem/sandbox/kubernetes v0.2.1
+	github.com/ishi-o/golem/store/mongodb v0.2.1
+	github.com/ishi-o/golem/store/redis v0.2.1
+	github.com/ishi-o/golem/store/sqlx v0.2.1
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -101,15 +101,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/ishi-o/golem/core => ../core
-
-replace github.com/ishi-o/golem/connector/feishu => ../connector/feishu
-
-replace github.com/ishi-o/golem/sandbox/kubernetes => ../sandbox/kubernetes
-
-replace github.com/ishi-o/golem/store/mongodb => ../store/mongodb
-
-replace github.com/ishi-o/golem/store/redis => ../store/redis
-
-replace github.com/ishi-o/golem/store/sqlx => ../store/sqlx

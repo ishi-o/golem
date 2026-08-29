@@ -2,11 +2,9 @@ module github.com/ishi-o/golem/store/mongodb
 
 go 1.21.0
 
-replace github.com/ishi-o/golem/core => ../../core
-
 require (
 	github.com/cloudwego/eino v0.9.17
-	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
+	github.com/ishi-o/golem/core v0.2.1
 	go.mongodb.org/mongo-driver v1.17.9
 )
 

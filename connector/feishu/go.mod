@@ -2,10 +2,8 @@ module github.com/ishi-o/golem/connector/feishu
 
 go 1.21.0
 
-replace github.com/ishi-o/golem/core => ../../core
-
 require (
-	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
+	github.com/ishi-o/golem/core v0.2.1
 	github.com/larksuite/oapi-sdk-go/v3 v3.11.0
 )
 
