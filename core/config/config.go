@@ -1,7 +1,7 @@
 // Package config contains the runtime configuration: plain structs that
 // embedders populate from environment variables, a file, or application
 // code, normalized by Normalize. The environment-backed default (the GOLEM_*
-// variables) lives in this repository's internal/bootstrap, next to the
+// variables) lives in the golem-cli repository's bootstrap, next to the
 // driver glue it assembles.
 package config
 

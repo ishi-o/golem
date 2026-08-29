@@ -13,15 +13,10 @@ the agent, and fire runs from your own application. Everything the runtime
 does — built-in tools, scheduled tasks, user questions, file publishing —
 is assembled and injected by you. → [Library guide](library.md)
 
-**As an out-of-the-box CLI.** The `cmd` module builds a chat client on an
-OpenAI-compatible model and a SQLite store, with terminal streaming and
-inline user questions. Set two environment variables and talk to it. →
-[CLI](cli.md)
-
-**As an out-of-the-box service.** The `app` module serves the same runtime
-over HTTP: a streaming chat endpoint, cancellation, and health checks, with
-an env-selected shell sandbox (docker or kubernetes). →
-[HTTP service](http-service.md)
+**As an out-of-the-box CLI.** The companion
+[golem-cli](https://github.com/ishi-o/golem-cli) repository builds a chat
+client on an OpenAI-compatible model and a SQLite store, with terminal
+streaming and inline user questions.
 
 ## Documentation
 
@@ -32,8 +27,5 @@ an env-selected shell sandbox (docker or kubernetes). →
 | [Scheduled tasks](scheduled-tasks.md) | The `schedule.Scheduler` injection seam, task lifecycle and statuses                 |
 | [Sandbox](sandbox.md)                 | The shell tools, the docker and kubernetes backends, env wiring                      |
 | [Stores](stores.md)                   | The persistence contract and the sqlx / mongodb / redis adapters                     |
-| [Configuration](configuration.md)     | Every environment variable the shipped binaries read                                 |
-| [CLI](cli.md)                         | The out-of-the-box command-line client                                               |
-| [HTTP service](http-service.md)       | The out-of-the-box HTTP server and its endpoints                                     |
 | [Extending](extending.md)             | Custom tools, MCP servers, todo and question handlers, connectors                    |
 | [Feishu connector](feishu.md)         | The optional Feishu/Lark chat surface                                                |

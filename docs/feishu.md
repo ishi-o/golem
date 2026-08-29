@@ -48,8 +48,7 @@ mux := http.NewServeMux()
 mux.Handle("/webhooks/feishu", handler)
 ```
 
-or, in this repository's [HTTP service](http-service.md), mounted by
-setting `RouterConfig.FeishuHandler` — the route is
+or mounted on your own HTTP service at any route of your choosing, e.g.
 `POST /webhooks/feishu`.
 
 ## Behaviour

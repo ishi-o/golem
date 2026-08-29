@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -82,13 +83,13 @@ func TestFeishuClientUsesSDKMessageAPIs(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	created, err := client.SendText(t.Context(), feishu.ReceiveIDChatID, "oc-chat", "hello")
+	created, err := client.SendText(context.Background(), feishu.ReceiveIDChatID, "oc-chat", "hello")
 	require.NoError(t, err)
 	assert.Equal(t, "om-created", created)
-	replied, err := client.ReplyText(t.Context(), created, "answer")
+	replied, err := client.ReplyText(context.Background(), created, "answer")
 	require.NoError(t, err)
 	assert.Equal(t, "om-replied", replied)
-	require.NoError(t, client.UpdateCard(t.Context(), replied, map[string]string{"content": "done"}))
+	require.NoError(t, client.UpdateCard(context.Background(), replied, map[string]string{"content": "done"}))
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -1,7 +1,7 @@
 version: 2
 updates:
   # Go modules: direct dependencies only. Dependabot must never rewrite
-  // indirect require lines: doing so historically pinned x/crypto & friends
+  # indirect require lines: doing so historically pinned x/crypto & friends
   # at go-1.25 versions and forced the module go directives up (see the
   # go<=1.23 policy enforced by go.work). Capped families are ignored above
   # their ceiling.
@@ -37,12 +37,6 @@ updates:
     directory: /sandbox/kubernetes
   - <<: *golang
     directory: /connector/feishu
-  - <<: *golang
-    directory: /internal
-  - <<: *golang
-    directory: /app
-  - <<: *golang
-    directory: /cmd
   - <<: *golang
     directory: /test
   - package-ecosystem: github-actions

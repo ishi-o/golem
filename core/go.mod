@@ -1,6 +1,6 @@
 module github.com/ishi-o/golem/core
 
-go 1.18.0
+go 1.21.0
 
 require github.com/cloudwego/eino v0.9.15
 

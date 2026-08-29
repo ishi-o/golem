@@ -1,10 +1,9 @@
 module github.com/ishi-o/golem/sandbox/docker
 
-go 1.23.0
+go 1.21.0
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/ishi-o/golem/core v0.1.0
 )
 
 require (

@@ -82,9 +82,9 @@ The tools' credential family (`SetCredential`, `ListCredentials`,
 `DeleteCredential`) joins automatically; values are never returned to the
 model.
 
-## In the shipped binaries
+## In the shipped CLI
 
-The out-of-the-box [CLI](cli.md) and [HTTP service](http-service.md) build
+The out-of-the-box [golem-cli](https://github.com/ishi-o/golem-cli) builds
 the backend from the environment — `GOLEM_SANDBOX=docker` or `kubernetes`
-(plus the `GOLEM_SANDBOX_*` variables in the
-[configuration reference](configuration.md)); unset means no shell tools.
+(plus the `GOLEM_SANDBOX_*` variables in its configuration reference); unset
+means no shell tools.

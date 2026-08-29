@@ -1,4 +1,4 @@
-MODULES := core internal store/sqlx store/mongodb store/redis connector/feishu sandbox/docker sandbox/kubernetes app cmd test
+MODULES := core store/sqlx store/mongodb store/redis connector/feishu sandbox/docker sandbox/kubernetes test
 
 .DEFAULT_GOAL := build
 

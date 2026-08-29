@@ -60,7 +60,7 @@ provider := golemtools.NewProvider(cfg, workspaces, backend, mcpBuilder{
 Connections are built per run (MCP handshakes are blocking network work) and
 closed when the run ends; a failing server costs its tools, never the run.
 `core/toolsearch` (an index over tool descriptions for large tool sets) is
-not yet wired to the shipped binaries.
+not yet wired to any shipped surface.
 
 ## Todo handlers
 

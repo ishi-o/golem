@@ -1,9 +1,8 @@
 module github.com/ishi-o/golem/sandbox/kubernetes
 
-go 1.23.0
+go 1.21.0
 
 require (
-	github.com/ishi-o/golem/core v0.1.0
 	k8s.io/api v0.32.13
 	k8s.io/apimachinery v0.32.13
 	k8s.io/client-go v0.32.13

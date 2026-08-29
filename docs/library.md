@@ -41,8 +41,8 @@ if err := cfg.Normalize(); err != nil {
 `SystemPrompt` and `ScheduledTaskPrompt` have defaults you can override;
 `cfg.AI.GuideThreshold` sets the tool-result size above which oversized
 results are diverted to a file in the user's workspace. (The `GOLEM_*`
-environment variables belong to this repository's own binaries — see
-[Configuration](configuration.md) — not to the library.)
+environment variables belong to [golem-cli](https://github.com/ishi-o/golem-cli),
+not to the library.)
 
 ## Store
 
@@ -62,8 +62,8 @@ The mongodb and redis adapters have the same shape — see
 ## Model
 
 The agent takes any eino `model.ToolCallingChatModel`. core deliberately
-ships none; the OpenAI-compatible one (used by this repository's binaries)
-comes from eino-ext:
+ships none; the OpenAI-compatible one (used by
+[golem-cli](https://github.com/ishi-o/golem-cli)) comes from eino-ext:
 
 ```go
 import einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -177,7 +177,8 @@ agent.WithListener(agent.ListenerFuncs{
 A handler that returns the answers inside the call (`tools.InlineAnswers`)
 lets the model continue from them in the same run; any other handler ends
 the turn, and the answers arrive in a later run. See the CLI's terminal
-handler (`cmd/questions.go` in this repository) for a working example.
+handler (`cmd/questions.go` in
+[golem-cli](https://github.com/ishi-o/golem-cli)) for a working example.
 
 ## A complete minimal program
 

@@ -19,9 +19,9 @@ if err != nil { return err }
 if err := backend.Migrate(ctx); err != nil { return err } // idempotent
 ```
 
-The sqlx adapter covers SQL databases through dialects (SQLite is what the
-repository's own binaries use; PostgreSQL/MySQL work through sqlx's
-dialects).
+The sqlx adapter covers SQL databases through dialects (SQLite is what
+[golem-cli](https://github.com/ishi-o/golem-cli) uses; PostgreSQL/MySQL
+work through sqlx's dialects).
 
 ## Redis is a record store here
 

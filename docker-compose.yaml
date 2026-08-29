@@ -1,7 +1,7 @@
 # A profile per persistence backend, so the containers can never drift from
 # what the application itself selected. The app service is intentionally
-# absent: Golem runs from source during
-# development (`go run ./app`) and from whatever image the deployment builds.
+# absent: an embedding application runs from source during development and
+# from whatever image its deployment builds.
 #
 #   docker compose --profile mongodb up
 #   docker compose --profile redis up
