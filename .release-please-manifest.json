@@ -1,9 +1,9 @@
 {
-  "core": "0.2.0",
-  "store/sqlx": "0.2.0",
-  "store/mongodb": "0.2.0",
-  "store/redis": "0.2.0",
-  "sandbox/docker": "0.2.0",
-  "sandbox/kubernetes": "0.2.0",
-  "connector/feishu": "0.2.0"
+  "core": "0.2.1",
+  "store/sqlx": "0.2.1",
+  "store/mongodb": "0.2.1",
+  "store/redis": "0.2.1",
+  "sandbox/docker": "0.2.1",
+  "sandbox/kubernetes": "0.2.1",
+  "connector/feishu": "0.2.1"
 }
