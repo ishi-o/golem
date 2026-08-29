@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/cloudwego/eino v0.9.17
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.4.0
