@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 
 	golemtools "github.com/ishi-o/golem/core/tools"
 )
@@ -21,11 +21,11 @@ func (s session) Exec(ctx context.Context, script string, stdin []byte, maxOutpu
 	if maxOutputBytes <= 0 {
 		maxOutputBytes = 30_000
 	}
-	created, err := s.sandbox.client.ContainerExecCreate(ctx, s.id, container.ExecOptions{Cmd: []string{"bash", "-c", script}, AttachStdin: len(stdin) > 0, AttachStdout: true, AttachStderr: true, Tty: false})
+	created, err := s.sandbox.client.ExecCreate(ctx, s.id, client.ExecCreateOptions{Cmd: []string{"bash", "-c", script}, AttachStdin: len(stdin) > 0, AttachStdout: true, AttachStderr: true})
 	if err != nil {
 		return golemtools.SandboxExecResult{}, fmt.Errorf("create container exec: %w", err)
 	}
-	attached, err := s.sandbox.client.ContainerExecAttach(ctx, created.ID, container.ExecStartOptions{Tty: false})
+	attached, err := s.sandbox.client.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return golemtools.SandboxExecResult{}, fmt.Errorf("attach container exec: %w", err)
 	}
@@ -56,7 +56,7 @@ func (s session) Exec(ctx context.Context, script string, stdin []byte, maxOutpu
 			return golemtools.SandboxExecResult{}, fmt.Errorf("read container exec: %w", copyErr)
 		}
 	}
-	inspect, err := s.sandbox.client.ContainerExecInspect(ctx, created.ID)
+	inspect, err := s.sandbox.client.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return golemtools.SandboxExecResult{}, fmt.Errorf("inspect container exec: %w", err)
 	}

@@ -2,9 +2,12 @@ module github.com/ishi-o/golem/store/mongodb
 
 go 1.21.0
 
+replace github.com/ishi-o/golem/core => ../../core
+
 require (
-	github.com/cloudwego/eino v0.9.15
-	go.mongodb.org/mongo-driver v1.17.4
+	github.com/cloudwego/eino v0.9.17
+	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
+	go.mongodb.org/mongo-driver v1.17.9
 )
 
 require (
@@ -29,7 +32,6 @@ require (
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

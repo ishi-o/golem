@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/client"
 
 	golemtools "github.com/ishi-o/golem/core/tools"
 )
@@ -61,21 +61,21 @@ func credentialEnvironment(credentials map[string]string) []string {
 }
 
 func (s *Sandbox) removeContainer(ctx context.Context, id string) error {
-	if err := s.client.ContainerStop(ctx, id, container.StopOptions{}); err != nil && !isNoSuchObject(err) {
+	if _, err := s.client.ContainerStop(ctx, id, client.ContainerStopOptions{}); err != nil && !isNoSuchObject(err) {
 		return fmt.Errorf("stop sandbox container: %w", err)
 	}
-	if err := s.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !isNoSuchObject(err) {
+	if _, err := s.client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !isNoSuchObject(err) {
 		return fmt.Errorf("remove sandbox container: %w", err)
 	}
 	return nil
 }
 
 func (s *Sandbox) isRunning(ctx context.Context, id string) (bool, error) {
-	info, err := s.client.ContainerInspect(ctx, id)
+	info, err := s.client.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
 		return false, err
 	}
-	return info.State != nil && info.State.Running, nil
+	return info.Container.State != nil && info.Container.State.Running, nil
 }
 
 func (s *Sandbox) lockFor(userID string) *sync.Mutex {

@@ -15,11 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 
 	"github.com/ishi-o/golem/core/storage"
 	golemtools "github.com/ishi-o/golem/core/tools"
@@ -79,7 +78,7 @@ func New(config Config) (*Sandbox, error) {
 		return nil, errors.New("docker sandbox: workspaces are required")
 	}
 	if config.Client == nil {
-		client, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		client, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
 			return nil, fmt.Errorf("docker sandbox: create client: %w", err)
 		}
@@ -142,14 +141,14 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 	// A process restart should not create a second sandbox while an earlier
 	// one is still alive. Labels are the durable registry; the in-memory map is
 	// only the fast path.
-	existing, err := s.client.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", LabelSandbox+"=true"), filters.Arg("label", LabelOwner+"="+userKey(userID))),
+	existing, err := s.client.ContainerList(ctx, client.ContainerListOptions{
+		Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(userID)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list sandbox containers: %w", err)
 	}
-	if len(existing) > 0 {
-		id := existing[0].ID
+	if len(existing.Items) > 0 {
+		id := existing.Items[0].ID
 		s.remember(userID, id)
 		return session{sandbox: s, id: id}, nil
 	}
@@ -187,12 +186,17 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 	startCtx, cancel := context.WithTimeout(ctx, s.config.StartupTimeout)
 	defer cancel()
 	name := containerName(userID)
-	created, err := s.client.ContainerCreate(startCtx, containerConfig, hostConfig, &network.NetworkingConfig{}, nil, name)
+	created, err := s.client.ContainerCreate(startCtx, client.ContainerCreateOptions{
+		Config:           containerConfig,
+		HostConfig:       hostConfig,
+		NetworkingConfig: &network.NetworkingConfig{},
+		Name:             name,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox container: %w", err)
 	}
-	if err := s.client.ContainerStart(startCtx, created.ID, container.StartOptions{}); err != nil {
-		_ = s.client.ContainerRemove(context.Background(), created.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	if _, err := s.client.ContainerStart(startCtx, created.ID, client.ContainerStartOptions{}); err != nil {
+		_, _ = s.client.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 		return nil, fmt.Errorf("start sandbox container: %w", err)
 	}
 	s.remember(userID, created.ID)
@@ -216,14 +220,14 @@ func (s *Sandbox) Remove(ctx context.Context, userID string) (bool, error) {
 	defer lock.Unlock()
 	id := s.containerFor(userID)
 	if id == "" {
-		containers, err := s.client.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", LabelSandbox+"=true"), filters.Arg("label", LabelOwner+"="+userKey(userID)))})
+		containers, err := s.client.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(userID))})
 		if err != nil {
 			return false, fmt.Errorf("find sandbox container: %w", err)
 		}
-		if len(containers) == 0 {
+		if len(containers.Items) == 0 {
 			return false, nil
 		}
-		id = containers[0].ID
+		id = containers.Items[0].ID
 	}
 	if err := s.removeContainer(ctx, id); err != nil {
 		return false, err
