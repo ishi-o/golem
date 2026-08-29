@@ -1,6 +1,6 @@
 module github.com/ishi-o/golem/store/redis
 
-go 1.23
+go 1.24.0
 
 replace github.com/ishi-o/golem/core => ../../core
 

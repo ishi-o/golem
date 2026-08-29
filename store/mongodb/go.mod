@@ -1,6 +1,6 @@
 module github.com/ishi-o/golem/store/mongodb
 
-go 1.21.0
+go 1.24.0
 
 require (
 	github.com/cloudwego/eino v0.9.17
