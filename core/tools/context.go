@@ -19,12 +19,15 @@ type Key[T any] struct {
 // keyID is deliberately allocated once per key. Using a single empty struct
 // as the context key would make every identity value overwrite every other
 // one, because context compares keys by equality rather than by their
-// generic type parameter.
-type keyID struct{}
+// generic type parameter. The name field is what keeps each allocation
+// distinct — and non-zero-size: a zero-size struct would share one address
+// (the runtime's zerobase) across every key, which is the same collision
+// with better manners.
+type keyID struct{ name string }
 
 // NewKey names a typed context key. Each call creates an independent key; the
 // name appears only in error messages and should still describe one concept.
-func NewKey[T any](name string) Key[T] { return Key[T]{name: name, id: &keyID{}} }
+func NewKey[T any](name string) Key[T] { return Key[T]{name: name, id: &keyID{name: name}} }
 
 // With returns a context carrying value under this key.
 func (k Key[T]) With(ctx context.Context, value T) context.Context {
@@ -91,4 +94,12 @@ var (
 	RootMessageID = NewKey[string]("rootMessageId")
 	// ReplyMessageID is the message this run's reply will answer.
 	ReplyMessageID = NewKey[string]("replyMessageId")
+	// RequestID is the id of the run the tool is executing in — what Cancel
+	// stops, and what ties a subagent to the run that started it.
+	RequestID = NewKey[string]("requestId")
+	// GroupID is the group whose files and skills the run may read through,
+	// empty when the run carries no group scope.
+	GroupID = NewKey[string]("groupId")
+	// TenantID is the tenant scope of the run, empty when there is none.
+	TenantID = NewKey[string]("tenantId")
 )

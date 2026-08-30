@@ -23,8 +23,13 @@ import (
 	golemtools "github.com/ishi-o/golem/core/tools"
 )
 
-func (s *Sandbox) buildJob(userID, secretName string) *batchv1.Job {
-	labelsForUser := map[string]string{LabelSandbox: "true", LabelOwner: userKey(userID), LabelRole: LabelRoleUser}
+// buildJob assembles the shell Job for one identity. key is the identity's
+// composite key — what the labels and GenerateName carry — while the
+// per-user subpaths inside the mounts use the user's own id, so a user's
+// PVC directory is shared by every scope they run in.
+func (s *Sandbox) buildJob(identity golemtools.SandboxIdentity, key, secretName string) *batchv1.Job {
+	userID := identity.UserID
+	labelsForUser := map[string]string{LabelSandbox: "true", LabelOwner: userKey(key), LabelRole: LabelRoleUser}
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse(s.config.CPURequest),
@@ -61,6 +66,30 @@ func (s *Sandbox) buildJob(userID, secretName string) *batchv1.Job {
 			Name: volumeName, MountPath: pvcMount.MountPath, SubPath: s.subPath(userID, pvcMount), ReadOnly: false,
 		})
 		volumes = append(volumes, corev1.Volume{Name: volumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcMount.PVCName}}})
+		// The group's and tenant's directories, each at the path the storage
+		// layout gives it, so the shell sees the same view the file tools
+		// do. One extra mount per scope per PVC, only when the identity
+		// carries the scope.
+		if identity.GroupID != "" {
+			name := fmt.Sprintf("group-mount-%d", i)
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: path.Join(pvcMount.MountPath, "groups", identity.GroupID),
+				SubPath:   s.scopeSubPath("groups", identity.GroupID, pvcMount),
+				ReadOnly:  false,
+			})
+			volumes = append(volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcMount.PVCName}}})
+		}
+		if identity.TenantID != "" {
+			name := fmt.Sprintf("tenant-mount-%d", i)
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: path.Join(pvcMount.MountPath, "tenants", identity.TenantID),
+				SubPath:   s.scopeSubPath("tenants", identity.TenantID, pvcMount),
+				ReadOnly:  false,
+			})
+			volumes = append(volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcMount.PVCName}}})
+		}
 	}
 	podSpec := corev1.PodSpec{
 		RestartPolicy:                 corev1.RestartPolicyNever,
@@ -82,7 +111,7 @@ func (s *Sandbox) buildJob(userID, secretName string) *batchv1.Job {
 	ttl := int32(defaultJobTTL / time.Second)
 	activeDeadline := durationSecondsInt64(s.config.HardDeadline)
 	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: "golem-shell-" + userKey(userID) + "-", Labels: labelsForUser},
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "golem-shell-" + userKey(key) + "-", Labels: labelsForUser},
 		Spec: batchv1.JobSpec{
 			Completions:             &one,
 			Parallelism:             &one,
@@ -207,6 +236,14 @@ func (s *Sandbox) subPath(userID string, mount PVCMount) string {
 		return path.Join(mount.SubPathPrefix, userKey(userID))
 	}
 	return joined
+}
+
+// scopeSubPath is the PVC subpath of a group's or tenant's directory,
+// namespaced under the same segment the storage layout gives it. The scope
+// id is hashed like a user id: the PVC's layout stays flat and collision-
+// free whatever the channel mints.
+func (s *Sandbox) scopeSubPath(scope, scopeID string, mount PVCMount) string {
+	return path.Join(mount.SubPathPrefix, scope, userKey(scopeID))
 }
 
 func (s *Sandbox) lockFor(userID string) *sync.Mutex {

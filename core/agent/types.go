@@ -56,6 +56,14 @@ var ChatScenario Scenario = &namedScenario{ScenarioBase{}, "CHAT"}
 // what actually enforces it.
 var ScheduledTaskScenario Scenario = &scheduledTaskScenario{namedScenario{ScenarioBase{}, "SCHEDULED_TASK"}}
 
+// SubagentScenario is a run another run started. It joins no conversation —
+// its whole task is the brief it was given, and a conversation of its own
+// keeps it out of every store whatever the backend does. It gets neither the
+// subagent tools (that is the depth cap: one level, enforced by name with no
+// counter to get wrong) nor the schedule tools — unattended work must not
+// leave work behind.
+var SubagentScenario Scenario = &subagentScenario{namedScenario{ScenarioBase{}, "SUBAGENT"}}
+
 type namedScenario struct {
 	ScenarioBase
 	name string
@@ -68,6 +76,19 @@ type scheduledTaskScenario struct{ namedScenario }
 func (s *scheduledTaskScenario) Offers(toolName string) bool {
 	switch toolName {
 	case tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask:
+		return false
+	}
+	return true
+}
+
+type subagentScenario struct{ namedScenario }
+
+func (s *subagentScenario) ConversationMemory() bool { return false }
+
+func (s *subagentScenario) Offers(toolName string) bool {
+	switch toolName {
+	case tools.ToolNameStartSubagent, tools.ToolNameWaitSubagent, tools.ToolNameCancelSubagent,
+		tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask:
 		return false
 	}
 	return true
@@ -86,7 +107,25 @@ type ResponseListener interface {
 	OnSubscribe()
 	OnModel(model string)
 	OnContent(contentSoFar string)
+	// OnReasoning receives the reasoning so far, accumulated like OnContent
+	// but reset per model call: a run's thinking is one block per model call,
+	// joined by a blank line, because a second call after a tool result is a
+	// new line of thought, not a continuation of the first.
+	OnReasoning(reasoningSoFar string)
 	OnUsage(model string, usage *schema.TokenUsage)
+	// OnSubagent reports what a run this one started is doing. Only the
+	// parent's listeners receive it, and only the fields the event kind
+	// carries — see SubagentEvent.
+	OnSubagent(event SubagentEvent)
+	// OnMessageQueued reports that a message joined this run in flight via
+	// FireOrQueue and is waiting to be read at the next tool boundary.
+	// Display names the message (a preview, a sender); it is identifying
+	// prose, not the body.
+	OnMessageQueued(requestID, display string)
+	// OnQueuedMessageRead reports the request ids the run just read into
+	// itself at a tool boundary — messages this run answers, so their
+	// senders are not waiting on a run of their own.
+	OnQueuedMessageRead(requestIDs []string)
 	OnError(err error)
 	// OnFinished is called exactly once, whatever the run ended by.
 	OnFinished(outcome Outcome)
@@ -96,6 +135,39 @@ type ResponseListener interface {
 	ShouldContinue() bool
 }
 
+// SubagentEvent is one report about one subagent of the run. Which fields
+// are set says what happened; the predicates name them. ContentSoFar is the
+// subagent's accumulated answer (set while it is talking and once at the
+// end); Usage is one model call's spend, attributed; Outcome is set when the
+// subagent has ended.
+type SubagentEvent struct {
+	SubagentID   string
+	Description  string
+	ContentSoFar string
+	Model        string
+	Usage        *schema.TokenUsage
+	Outcome      Outcome
+}
+
+// Started reports the subagent was started.
+func (e SubagentEvent) Started() bool {
+	return e.ContentSoFar == "" && e.Model == "" && e.Usage == nil && e.Outcome == ""
+}
+
+// Said reports ContentSoFar is set: the subagent's answer so far. A surface
+// renders this where it shows work being waited on — never as the reply,
+// which is what OnContent means.
+func (e SubagentEvent) Said() bool { return e.ContentSoFar != "" && e.Outcome == "" }
+
+// Spent reports Usage is set: tokens this subagent just used, counted on the
+// parent's turn as well.
+func (e SubagentEvent) Spent() bool {
+	return e.Usage != nil && e.Outcome == ""
+}
+
+// Ended reports the subagent finished, and how; with the final ContentSoFar.
+func (e SubagentEvent) Ended() bool { return e.Outcome != "" }
+
 // ListenerFuncs adapts functions to ResponseListener. The zero value is a
 // listener that observes nothing and always continues — embed it and fill
 // the hooks a surface needs.
@@ -104,9 +176,15 @@ type ListenerFuncs struct {
 	OnSubscribeFunc func()
 	OnModelFunc     func(model string)
 	OnContentFunc   func(contentSoFar string)
+	OnReasoningFunc func(reasoningSoFar string)
 	OnUsageFunc     func(model string, usage *schema.TokenUsage)
-	OnErrorFunc     func(err error)
-	OnFinishedFunc  func(outcome Outcome)
+	OnSubagentFunc  func(event SubagentEvent)
+	// OnMessageQueuedFunc and OnQueuedMessageReadFunc observe FireOrQueue
+	// joining messages to a run in flight.
+	OnMessageQueuedFunc     func(requestID, display string)
+	OnQueuedMessageReadFunc func(requestIDs []string)
+	OnErrorFunc             func(err error)
+	OnFinishedFunc          func(outcome Outcome)
 	// ShouldContinueFunc nil means always continue.
 	ShouldContinueFunc func() bool
 }
@@ -138,9 +216,33 @@ func (l ListenerFuncs) OnContent(c string) {
 	}
 }
 
+func (l ListenerFuncs) OnReasoning(r string) {
+	if l.OnReasoningFunc != nil {
+		l.OnReasoningFunc(r)
+	}
+}
+
 func (l ListenerFuncs) OnUsage(m string, u *schema.TokenUsage) {
 	if l.OnUsageFunc != nil {
 		l.OnUsageFunc(m, u)
+	}
+}
+
+func (l ListenerFuncs) OnSubagent(e SubagentEvent) {
+	if l.OnSubagentFunc != nil {
+		l.OnSubagentFunc(e)
+	}
+}
+
+func (l ListenerFuncs) OnMessageQueued(requestID, display string) {
+	if l.OnMessageQueuedFunc != nil {
+		l.OnMessageQueuedFunc(requestID, display)
+	}
+}
+
+func (l ListenerFuncs) OnQueuedMessageRead(requestIDs []string) {
+	if l.OnQueuedMessageReadFunc != nil {
+		l.OnQueuedMessageReadFunc(requestIDs)
 	}
 }
 

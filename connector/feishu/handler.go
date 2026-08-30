@@ -32,9 +32,13 @@ type Handler struct {
 	client            *Client
 	verificationToken string
 	questionTTL       time.Duration
-	logger            *slog.Logger
-	clock             func() time.Time
-	actionMu          sync.Mutex
+	// tenantID scopes every run this connector fires: a group's shared
+	// files and skills are read through on top of each user's own. Empty
+	// means no tenant scope.
+	tenantID string
+	logger   *slog.Logger
+	clock    func() time.Time
+	actionMu sync.Mutex
 }
 
 // HandlerOption configures a webhook handler during construction.
@@ -62,6 +66,12 @@ func WithClock(now func() time.Time) HandlerOption {
 			h.clock = now
 		}
 	}
+}
+
+// WithTenantID gives every run the connector fires a tenant scope: the
+// tenant's shared files and skills are read through each user's own.
+func WithTenantID(tenantID string) HandlerOption {
+	return func(h *Handler) { h.tenantID = tenantID }
 }
 
 // NewHandler constructs a Feishu webhook handler.
@@ -211,12 +221,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	conversationID := firstNonEmpty(event.RootMessageID, event.ChatID, event.MessageID)
 	listener := h.responseListener(event, true)
+	// A group chat is the group: its id scopes the run, so the group's
+	// shared files and skills are read through each member's own.
+	groupID := ""
+	if event.ChatType == "group" {
+		groupID = event.ChatID
+	}
 	request := agent.NewRequest(agent.ChatScenario, event.Text,
 		agent.WithRequestID(event.MessageID),
 		agent.WithIdentity(event.UserID, event.ChatID, event.ChatType),
+		agent.WithScope(groupID, h.tenantID),
 		agent.WithConversation(conversationID, rootID, event.MessageID),
 		agent.WithListener(listener),
 	)
+	// A message arriving while this conversation's run is still working
+	// joins that run at its next tool boundary — a correction reaches the
+	// turn it corrects. The duplicate claim above stands either way: the
+	// message is answered once, by the run that read it or by its own.
+	text := event.Text
+	if h.agent.FireOrQueue(request, func() string { return text }, event.Text) {
+		writeJSON(w, http.StatusOK, map[string]bool{"queued": true})
+		return
+	}
 	if err := h.agent.Fire(request); err != nil {
 		if h.backend != nil {
 			_ = h.backend.ProcessedMessages().Release(r.Context(), event.MessageID)
@@ -331,9 +357,16 @@ func (h *Handler) handleAction(ctx context.Context, value map[string]any, actorI
 		return errors.New("feishu: agent is not configured")
 	}
 	text := fmt.Sprintf("The user answered the question %q with: %s", question, answer)
+	// The same scope the asking run carried: a resumed answer in a group
+	// chat reads through the group's home too.
+	resumeGroupID := ""
+	if pending.ChatType == "group" {
+		resumeGroupID = pending.ChatID
+	}
 	err = h.agent.Fire(agent.NewRequest(agent.ChatScenario, text,
 		agent.WithRequestID(pending.ID+":answer"),
 		agent.WithIdentity(pending.UserID, pending.ChatID, pending.ChatType),
+		agent.WithScope(resumeGroupID, h.tenantID),
 		agent.WithConversation(pending.ConversationID, pending.RootMessageID, pending.CardID),
 		agent.WithListener(h.responseListener(MessageEvent{MessageID: pending.CardID, UserID: pending.UserID, ChatID: pending.ChatID, ChatType: pending.ChatType, RootMessageID: pending.RootMessageID}, false)),
 	))

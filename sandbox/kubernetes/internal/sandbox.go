@@ -203,24 +203,28 @@ func New(config Config) (*Sandbox, error) {
 	}, nil
 }
 
-// Ensure returns a running or starting shell Pod for userID, creating a Job
-// on first use. The per-user lock prevents duplicate Jobs in this process.
-func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.SandboxSession, error) {
-	if strings.TrimSpace(userID) == "" {
+// Ensure returns a running or starting shell Pod for the identity, creating
+// a Job on first use. The Job is keyed on the whole identity — user, group
+// and tenant together — so two scopes never share a Pod; each scope's
+// directory is mounted at its own path. The per-identity lock prevents
+// duplicate Jobs in this process.
+func (s *Sandbox) Ensure(ctx context.Context, identity golemtools.SandboxIdentity) (golemtools.SandboxSession, error) {
+	if strings.TrimSpace(identity.UserID) == "" {
 		return nil, errors.New("kubernetes sandbox: user id is required")
 	}
-	lock := s.lockFor(userID)
+	key := identity.Key()
+	lock := s.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
-	if pod, err := s.findPod(ctx, userID, ""); err != nil {
+	if pod, err := s.findPod(ctx, key, ""); err != nil {
 		return nil, fmt.Errorf("find shell pod: %w", err)
 	} else if pod != nil {
 		if pod.Status.Phase == corev1.PodRunning {
 			return session{sandbox: s, pod: pod.Name}, nil
 		}
 		if jobName := pod.Labels["batch.kubernetes.io/job-name"]; jobName != "" {
-			pod, err = s.waitForPod(ctx, userID, jobName)
+			pod, err = s.waitForPod(ctx, key, jobName)
 			if err != nil {
 				return nil, err
 			}
@@ -230,39 +234,43 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 
 	secretName := ""
 	if s.config.Credentials != nil {
-		credentials, err := s.config.Credentials(ctx, userID)
+		// Credentials are personal, not scoped: the user's secret serves
+		// every scope they run in.
+		credentials, err := s.config.Credentials(ctx, identity.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve sandbox credentials: %w", err)
 		}
-		secretName, err = s.ensureCredentialsSecret(ctx, userID, credentials)
+		secretName, err = s.ensureCredentialsSecret(ctx, identity.UserID, credentials)
 		if err != nil {
 			return nil, err
 		}
 	}
-	job, err := s.client.BatchV1().Jobs(s.config.Namespace).Create(ctx, s.buildJob(userID, secretName), metav1.CreateOptions{})
+	job, err := s.client.BatchV1().Jobs(s.config.Namespace).Create(ctx, s.buildJob(identity, key, secretName), metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("create shell job: %w", err)
 	}
-	s.log.Info("created Kubernetes sandbox", "user_id", userID, "job", job.Name)
-	pod, err := s.waitForPod(ctx, userID, job.Name)
+	s.log.Info("created Kubernetes sandbox", "user_id", identity.UserID, "group_id", identity.GroupID, "tenant_id", identity.TenantID, "job", job.Name)
+	pod, err := s.waitForPod(ctx, key, job.Name)
 	if err != nil {
 		return nil, err
 	}
 	return session{sandbox: s, pod: pod.Name}, nil
 }
 
-// Remove deletes all Jobs belonging to the user and their Pods. Persistent
-// PVC files are intentionally left untouched; the next Bash call creates a
-// fresh disposable sandbox. The credential Secret is removed as well.
-func (s *Sandbox) Remove(ctx context.Context, userID string) (bool, error) {
-	if strings.TrimSpace(userID) == "" {
+// Remove deletes all Jobs belonging to the identity and their Pods.
+// Persistent PVC files are intentionally left untouched; the next Bash call
+// creates a fresh disposable sandbox. The credential Secret is removed as
+// well.
+func (s *Sandbox) Remove(ctx context.Context, identity golemtools.SandboxIdentity) (bool, error) {
+	if strings.TrimSpace(identity.UserID) == "" {
 		return false, errors.New("kubernetes sandbox: user id is required")
 	}
-	lock := s.lockFor(userID)
+	key := identity.Key()
+	lock := s.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
-	selector := ownerSelector(userID)
+	selector := ownerSelector(key)
 	jobs, err := s.client.BatchV1().Jobs(s.config.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return false, fmt.Errorf("list shell jobs: %w", err)
@@ -278,14 +286,14 @@ func (s *Sandbox) Remove(ctx context.Context, userID string) (bool, error) {
 		removed = true
 	}
 	if s.config.Credentials != nil {
-		if err := s.client.CoreV1().Secrets(s.config.Namespace).Delete(ctx, credentialSecretName(userID), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := s.client.CoreV1().Secrets(s.config.Namespace).Delete(ctx, credentialSecretName(identity.UserID), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			errs = append(errs, fmt.Errorf("delete shell credentials: %w", err))
 		} else if !apierrors.IsNotFound(err) {
 			removed = true
 		}
 	}
 	if removed {
-		s.log.Info("removed Kubernetes sandbox", "user_id", userID, "jobs", len(jobs.Items))
+		s.log.Info("removed Kubernetes sandbox", "user_id", identity.UserID, "jobs", len(jobs.Items))
 	}
 	return removed, errors.Join(errs...)
 }

@@ -15,12 +15,26 @@ import (
 type Request struct {
 	// RequestID is what Cancel stops; empty means not cancellable.
 	RequestID string
+	// ParentRequestID names the run that started this one, when it is a
+	// subagent: cancelling the parent cancels this run, its tokens count on
+	// the parent's turn, and the parent is held open until it finishes. A
+	// parent that already ended is forgotten — there is nobody to tell.
+	ParentRequestID string
+	// Description is one line saying what the run is for, shown to listeners
+	// of the parent run while a subagent works.
+	Description string
 	// Scenario is required (NewRequest's argument).
 	Scenario Scenario
 	UserID   string
 	ChatID   string
 	// ChatType defaults to "p2p".
 	ChatType string
+	// GroupID and TenantID scope the run's reads beyond the user's own
+	// home: a group's or tenant's shared files and skills are read through
+	// (never written to), and the knowledge base and sandbox carry the same
+	// scope. Empty means no scope.
+	GroupID  string
+	TenantID string
 	// ConversationID groups the runs that share chat memory.
 	ConversationID string
 	RootMessageID  string
@@ -58,10 +72,32 @@ func NewRequest(scenario Scenario, text string, opts ...RequestOption) Request {
 // WithRequestID names the run for Cancel.
 func WithRequestID(id string) RequestOption { return func(r *Request) { r.RequestID = id } }
 
+// WithParent ties the run to the run that started it, making it a subagent:
+// cancelled with the parent, its usage counted on the parent's turn, and the
+// parent held open until it finishes.
+func WithParent(parentRequestID string) RequestOption {
+	return func(r *Request) { r.ParentRequestID = parentRequestID }
+}
+
+// WithDescription says what the run is for, in one line, where a surface
+// shows work in progress.
+func WithDescription(description string) RequestOption {
+	return func(r *Request) { r.Description = description }
+}
+
 // WithIdentity sets who is talking and where.
 func WithIdentity(userID, chatID, chatType string) RequestOption {
 	return func(r *Request) {
 		r.UserID, r.ChatID, r.ChatType = userID, chatID, chatType
+	}
+}
+
+// WithScope gives the run a group and tenant: their homes' files and skills
+// are read through the user's own, and the knowledge base and sandbox carry
+// the same scope. Blank ids mean no scope.
+func WithScope(groupID, tenantID string) RequestOption {
+	return func(r *Request) {
+		r.GroupID, r.TenantID = groupID, tenantID
 	}
 }
 
@@ -148,5 +184,8 @@ func (r Request) context(ctx context.Context, mutators []func(context.Context) c
 	ctx = tools.ChatType.With(ctx, r.ChatType)
 	ctx = tools.RootMessageID.With(ctx, r.RootMessageID)
 	ctx = tools.ReplyMessageID.With(ctx, r.ReplyMessageID)
+	ctx = tools.RequestID.With(ctx, r.RequestID)
+	ctx = tools.GroupID.With(ctx, r.GroupID)
+	ctx = tools.TenantID.With(ctx, r.TenantID)
 	return ctx
 }

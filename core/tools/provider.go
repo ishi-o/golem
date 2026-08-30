@@ -145,11 +145,15 @@ func (p *Provider) RegisterSandbox(sandbox Sandbox, config SandboxToolsConfig) e
 
 // ComposeRequest names what Compose needs from the run. ScenarioOffers is
 // the resolved Scenario.Offers of the request; the rest is identity and the
-// per-run handlers.
+// per-run handlers. GroupID and TenantID, when set, widen the run's reads:
+// the group's and tenant's homes join the user's own for the file, skill
+// and publish tools.
 type ComposeRequest struct {
 	ScenarioOffers func(name string) bool
 	UserID         string
 	ChatID         string
+	GroupID        string
+	TenantID       string
 	TodoHandler    TodoEventHandler
 	Questions      QuestionHandler
 	// AnswersArriveLater is true when Questions cannot answer inline.
@@ -179,7 +183,21 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 	}
 	var tools []tool.InvokableTool
 
-	home := p.workspaces.ForOwner(req.UserID)
+	// The run's view of the directories its tools work in: the user's own
+	// home, plus the group's and tenant's for reading when the run carries
+	// those scopes. Writes always belong to the user — what a run produces
+	// belongs to who asked.
+	var home storage.Home = p.workspaces.ForOwner(req.UserID)
+	if req.GroupID != "" || req.TenantID != "" {
+		members := []storage.Home{}
+		if req.GroupID != "" {
+			members = append(members, p.workspaces.ForGroup(req.GroupID))
+		}
+		if req.TenantID != "" {
+			members = append(members, p.workspaces.ForTenant(req.TenantID))
+		}
+		home = storage.NewCompositeHome(home, members...)
+	}
 
 	// The scenario tools, filtered. A name-resolved filter (rather than
 	// passing tool values) keeps the Scenario interface free of this

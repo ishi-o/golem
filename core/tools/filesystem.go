@@ -17,21 +17,35 @@ import (
 )
 
 // FileSystemTools are the file tools of one run, rooted at the user's
-// workspace. The root is enforced on every path: a model-walked "../" must
+// workspace. The roots are enforced on every path: a model-walked "../" must
 // not turn the workspace into a file reader for the whole machine.
 //
-// One instance per run (not one per process) because the root is per user.
+// One instance per run (not one per process) because the roots are per user.
+// A run with group or tenant scope reads across those homes' workspaces too;
+// writes always land in the primary — what a run produces belongs to who
+// asked.
 type FileSystemTools struct {
-	home *storage.UserHome
+	primary string
+	roots   []string
 }
 
-// NewFileSystemTools returns the file tools rooted at the user's workspace.
-func NewFileSystemTools(home *storage.UserHome) (*FileSystemTools, error) {
-	ws, err := home.Folder(storage.FolderWorkspace)
+// NewFileSystemTools returns the file tools over the run's home. The home's
+// primary root receives every write; the further roots (a group's, a
+// tenant's) are read through.
+func NewFileSystemTools(home storage.Home) (*FileSystemTools, error) {
+	primary, err := home.Folder(storage.FolderWorkspace)
 	if err != nil {
 		return nil, err
 	}
-	return &FileSystemTools{home: storage.NewUserHome(ws)}, nil
+	t := &FileSystemTools{primary: primary, roots: []string{primary}}
+	for _, root := range home.Roots()[1:] {
+		dir := filepath.Join(root, string(storage.FolderWorkspace))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		t.roots = append(t.roots, dir)
+	}
+	return t, nil
 }
 
 // List lists the file tools, satisfying Builtin.
@@ -39,16 +53,38 @@ func (f *FileSystemTools) List() []tool.InvokableTool {
 	return []tool.InvokableTool{f.Read(), f.Write(), f.ListFiles(), f.Grep()}
 }
 
-// resolve keeps every path inside the workspace root.
-func (f *FileSystemTools) resolve(rel string) (string, error) {
+// resolveWrite keeps the write inside the primary workspace root: the
+// cleaned path must be relative and not ".."-prefixed, so the join below
+// never escapes.
+func (f *FileSystemTools) resolveWrite(rel string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || clean == "" {
-		return f.home.Root(), nil
-	}
-	if !f.home.Contains(filepath.Join(f.home.Root(), clean)) {
+	if strings.HasPrefix(clean, "..") {
 		return "", fmt.Errorf("path %q is outside the workspace", rel)
 	}
-	return filepath.Join(f.home.Root(), clean), nil
+	if clean == "." || clean == "" {
+		return f.primary, nil
+	}
+	return filepath.Join(f.primary, clean), nil
+}
+
+// resolveRead finds a readable path: the primary's file if it exists, else
+// the first further root holding it, else the primary's path (the read
+// surfaces the error rather than the resolver guessing).
+func (f *FileSystemTools) resolveRead(rel string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if clean == "." || clean == "" {
+		return f.primary, nil
+	}
+	if strings.HasPrefix(clean, "..") {
+		return "", fmt.Errorf("path %q is outside the workspace", rel)
+	}
+	for _, root := range f.roots {
+		candidate := filepath.Join(root, clean)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return filepath.Join(f.primary, clean), nil
 }
 
 // Read reads a file, optionally a window of lines.
@@ -68,7 +104,7 @@ func (f *FileSystemTools) Read() tool.InvokableTool {
 	return MustTool(utils.InferTool(ToolNameReadFile,
 		"Read a file from the workspace. Returns its content; offset and limit select a range of lines.",
 		func(ctx context.Context, in input) (output, error) {
-			path, err := f.resolve(in.Path)
+			path, err := f.resolveRead(in.Path)
 			if err != nil {
 				return output{}, err
 			}
@@ -101,7 +137,7 @@ func (f *FileSystemTools) Write() tool.InvokableTool {
 	return MustTool(utils.InferTool(ToolNameWriteFile,
 		"Write a file in the workspace, creating or replacing it whole. Parent directories are created.",
 		func(ctx context.Context, in input) (string, error) {
-			path, err := f.resolve(in.Path)
+			path, err := f.resolveWrite(in.Path)
 			if err != nil {
 				return "", err
 			}
@@ -130,7 +166,7 @@ func (f *FileSystemTools) ListFiles() tool.InvokableTool {
 		func(ctx context.Context, in struct {
 			Path string `json:"path"`
 		}) (output, error) {
-			path, err := f.resolve(in.Path)
+			path, err := f.resolveRead(in.Path)
 			if err != nil {
 				return output{}, err
 			}
@@ -172,38 +208,47 @@ func (f *FileSystemTools) Grep() tool.InvokableTool {
 			if err != nil {
 				return output{}, err
 			}
-			root, err := f.resolve(in.Path)
-			if err != nil {
-				return output{}, err
+			clean := filepath.Clean(filepath.FromSlash(in.Path))
+			if strings.HasPrefix(clean, "..") {
+				return output{}, fmt.Errorf("path %q is outside the workspace", in.Path)
 			}
 			out := output{}
 			// A cap because a pattern matching everything in a big tree
 			// would otherwise return the tree; the model narrows or pages.
 			const maxMatches = 200
-			err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return err
+			for _, root := range f.roots {
+				at := root
+				if clean != "." && clean != "" {
+					at = filepath.Join(root, clean)
 				}
-				if len(out.Matches) >= maxMatches {
-					return nil
+				if _, err := os.Stat(at); err != nil {
+					continue
 				}
-				data, err := os.ReadFile(p)
-				if err != nil {
-					return nil // unreadable files are skipped, not fatal
-				}
-				rel, _ := filepath.Rel(f.home.Root(), p)
-				for i, line := range strings.Split(string(data), "\n") {
-					if re.MatchString(line) {
-						out.Matches = append(out.Matches, match{File: filepath.ToSlash(rel), Line: i + 1, Handle: strings.TrimSpace(line)})
-						if len(out.Matches) >= maxMatches {
-							break
+				err := filepath.WalkDir(at, func(p string, d fs.DirEntry, err error) error {
+					if err != nil || d.IsDir() {
+						return err
+					}
+					if len(out.Matches) >= maxMatches {
+						return nil
+					}
+					data, err := os.ReadFile(p)
+					if err != nil {
+						return nil // unreadable files are skipped, not fatal
+					}
+					rel, _ := filepath.Rel(root, p)
+					for i, line := range strings.Split(string(data), "\n") {
+						if re.MatchString(line) {
+							out.Matches = append(out.Matches, match{File: filepath.ToSlash(rel), Line: i + 1, Handle: strings.TrimSpace(line)})
+							if len(out.Matches) >= maxMatches {
+								break
+							}
 						}
 					}
+					return nil
+				})
+				if err != nil {
+					return output{}, err
 				}
-				return nil
-			})
-			if err != nil {
-				return output{}, err
 			}
 			return out, nil
 		}))

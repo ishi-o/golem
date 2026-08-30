@@ -112,6 +112,9 @@ runner, err := schedule.New(backend.ScheduledTasks(), agent, schedule.Config{
 if err != nil { log.Fatal(err) }
 if err := runner.Start(ctx); err != nil { log.Fatal(err) }
 schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledTasks()))
+
+// Subagents (optional): the agent as a tool of its own. See Subagents.
+subagent.Register(provider, agent, cfg, nil, logger)
 ```
 
 Your own tools register individually — see
@@ -133,6 +136,16 @@ a := agent.New(chatModel, backend, provider, cfg,
 `Fire` is non-blocking (it returns once the run is accepted); `Cancel`
 aborts a run by request id; `Shutdown` stops accepting and waits out
 in-flight runs.
+
+`FireOrQueue` offers a message to the run already in flight over the same
+conversation by the same user: a correction, an addition, an answer to
+"should I go on?" arriving while the agent works. True means the run took it
+— it is read into the turn at the next tool boundary, framed so the model
+knows it arrived mid-turn, and no run of its own is started. False means
+nothing matching is live and the caller should `Fire` the request itself.
+The run's listeners hear `OnMessageQueued` when a message joins and
+`OnQueuedMessageRead` when it is read in; a message the run never got round
+to reading is re-fired as its own run after the first one finishes.
 
 ## Runs, listeners, cancellation
 
@@ -158,7 +171,14 @@ if err := a.Fire(request); err != nil { log.Fatal(err) }
 Scenarios shape the run: `ChatScenario` keeps conversation memory and offers
 every tool; `ScheduledTaskScenario` (used by the schedule runner) resumes
 the creating conversation but excludes the schedule tools so a firing
-cannot schedule more work.
+cannot schedule more work; `SubagentScenario` (used by the subagent tools)
+joins no conversation and withholds the subagent and schedule tools, which
+is the depth cap — see [Subagents](subagents.md).
+
+Listeners also carry `OnReasoning` (the model's thinking so far, one block
+per model call — a reasoning-capable model's stream carries it) and
+`OnSubagent` (what a run this one started is doing; only the parent's
+listeners receive it).
 
 ## User questions
 

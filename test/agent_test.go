@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,9 +35,18 @@ type fakeModel struct {
 	seen  []*schema.Message
 	tools []*schema.ToolInfo
 	hold  <-chan struct{}
+	// adaptCall rewrites a scripted tool call's arguments before the turn is
+	// streamed — used to splice in ids the scripted model could not have
+	// known (the id a StartSubagent returned, say).
+	adaptCall func(call *schema.ToolCall)
+	// streamHook observes the context of each Stream call, for tests.
+	streamHook func(ctx context.Context)
 }
 
 func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	if f.streamHook != nil {
+		f.streamHook(ctx)
+	}
 	if f.hold != nil {
 		select {
 		case <-ctx.Done():
@@ -56,6 +66,14 @@ func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, _ ...mo
 	turn := f.turns[0]
 	f.turns = f.turns[1:]
 	f.mu.Unlock()
+	// Adapted outside the lock: the hook may read the model's seen messages.
+	if f.adaptCall != nil {
+		for _, chunk := range turn {
+			for i := range chunk.ToolCalls {
+				f.adaptCall(&chunk.ToolCalls[i])
+			}
+		}
+	}
 	return schema.StreamReaderFromArray(turn), nil
 }
 
@@ -86,8 +104,12 @@ func (f *fakeModel) toolMessages() []*schema.Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var messages []*schema.Message
+	seen := map[string]bool{}
 	for _, msg := range f.seen {
-		if msg.Role == schema.Tool {
+		// Each model call's input re-includes the earlier tool results;
+		// what the assertions want is one entry per tool call.
+		if msg.Role == schema.Tool && !seen[msg.ToolCallID] {
+			seen[msg.ToolCallID] = true
 			messages = append(messages, msg)
 		}
 	}
@@ -108,6 +130,13 @@ func textChunks(s string) []*schema.Message {
 
 func newTestAgent(t *testing.T, m model.ToolCallingChatModel, configure ...func(*config.Config)) (*agent.Agent, *sqlxFixture) {
 	t.Helper()
+	return buildTestAgent(t, m, nil, configure...)
+}
+
+// buildTestAgent is newTestAgent plus a hook to register process-wide tools
+// on the provider before the agent is constructed.
+func buildTestAgent(t *testing.T, m model.ToolCallingChatModel, register func(p *tools.Provider), configure ...func(*config.Config)) (*agent.Agent, *sqlxFixture) {
+	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{}
 	require.NoError(t, cfg.Normalize())
@@ -119,6 +148,9 @@ func newTestAgent(t *testing.T, m model.ToolCallingChatModel, configure ...func(
 	t.Cleanup(func() { require.NoError(t, fixture.Close()) })
 	backend := fixture.Backend()
 	provider := tools.NewProvider(cfg, storage.NewWorkspaceFactory(dir), backend, nil)
+	if register != nil {
+		register(provider)
+	}
 	a := agent.New(m, fixture.Memory(), provider, cfg, agent.WithBackend(backend))
 	return a, fixture
 }
@@ -252,6 +284,253 @@ func TestCancelEndsRunCancelled(t *testing.T) {
 	require.True(t, a.Cancel("cancel-me"), "cancel did not find the run")
 	require.Equal(t, agent.OutcomeCancelled, waitFinished(t, done))
 	close(release)
+}
+
+// reasoningTurns scripts a run whose two model calls each stream reasoning:
+// the first as deltas, the second in cumulative chunks (a provider that
+// resends the whole call's thinking so far on every chunk). A tool call ends
+// the first call so the loop reaches the second.
+func reasoningTurns() [][]*schema.Message {
+	return [][]*schema.Message{
+		{
+			{Role: schema.Assistant, ReasoningContent: "first "},
+			{Role: schema.Assistant, ReasoningContent: "thoughts"},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				ID: "call-r", Function: schema.FunctionCall{Name: tools.ToolNameCurrentDateTime, Arguments: "{}"},
+			}}},
+		},
+		{
+			{Role: schema.Assistant, ReasoningContent: "re"},
+			{Role: schema.Assistant, ReasoningContent: "reasoned twice"},
+			{Role: schema.Assistant, Content: "final answer"},
+		},
+	}
+}
+
+func TestRunStreamsReasoningPerModelCall(t *testing.T) {
+	m := &fakeModel{turns: reasoningTurns()}
+	a, _ := newTestAgent(t, m)
+	done := make(chan agent.Outcome, 1)
+	var mu sync.Mutex
+	var reasoning []string
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "think hard",
+		agent.WithIdentity("user-r", "chat-r", "p2p"),
+		agent.WithListener(agent.ListenerFuncs{
+			OnReasoningFunc: func(soFar string) {
+				mu.Lock()
+				reasoning = append(reasoning, soFar)
+				mu.Unlock()
+			},
+			OnFinishedFunc: func(o agent.Outcome) { done <- o },
+		}),
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+	require.Equal(t, 2, m.callCount(), "the scripted tool call should have driven a second model call")
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, reasoning, "no OnReasoning callbacks")
+	last := reasoning[len(reasoning)-1]
+	assert.Equal(t, "first thoughts\n\nreasoned twice", last,
+		"reasoning should carry one block per model call, cumulative chunks deduplicated")
+	// Every callback is a prefix of the final accumulation.
+	for _, r := range reasoning {
+		assert.True(t, strings.HasPrefix("first thoughts\n\nreasoned twice", r),
+			"non-accumulated reasoning callback: %q", r)
+	}
+}
+
+func TestRunWithoutReasoningStaysSilent(t *testing.T) {
+	m := &fakeModel{turns: [][]*schema.Message{textChunks("plain answer")}}
+	a, _ := newTestAgent(t, m)
+	done := make(chan agent.Outcome, 1)
+	called := false
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "hi",
+		agent.WithIdentity("user-quiet", "chat-quiet", "p2p"),
+		agent.WithListener(agent.ListenerFuncs{
+			OnReasoningFunc: func(string) { called = true },
+			OnFinishedFunc:  func(o agent.Outcome) { done <- o },
+		}),
+	)))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+	assert.False(t, called, "OnReasoning fired for a model that sent none")
+}
+
+// blockingTool is a registered tool that signals when the run is inside it
+// and blocks until released — the seam the queueing tests use to offer a
+// message while the run is mid-tool.
+const blockingToolName = "BlockingTestTool"
+
+// newBlockingTestAgent builds an agent with the blocking tool registered.
+// entered may be nil.
+func newBlockingTestAgent(t *testing.T, m *fakeModel, entered, release chan struct{}) *agent.Agent {
+	t.Helper()
+	a, _ := buildTestAgent(t, m, func(p *tools.Provider) {
+		p.Register(tools.MustTool(utils.InferTool(blockingToolName,
+			"Blocks until released; for tests.",
+			func(ctx context.Context, _ struct{}) (string, error) {
+				if entered != nil {
+					entered <- struct{}{}
+				}
+				if release != nil {
+					<-release
+				}
+				return "unblocked", nil
+			})), nil)
+	})
+	return a
+}
+
+func TestFireOrQueueJoinsRunAtToolBoundary(t *testing.T) {
+	// The first model call runs a tool that blocks until the second message
+	// has been offered, so the join is deterministic.
+	midTool := make(chan struct{})
+	release := make(chan struct{})
+	m := &fakeModel{turns: [][]*schema.Message{
+		{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+			ID: "call-q", Function: schema.FunctionCall{Name: blockingToolName, Arguments: "{}"},
+		}}}},
+		textChunks("taking the addition into account"),
+	}}
+	a := newBlockingTestAgent(t, m, midTool, release)
+
+	done := make(chan agent.Outcome, 1)
+	var mu sync.Mutex
+	var queued, read []string
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "start the work",
+		agent.WithRequestID("run-q"),
+		agent.WithIdentity("user-q", "chat-q", "p2p"),
+		agent.WithConversation("conv-q", "root-q", "msg-q"),
+		agent.WithListener(agent.ListenerFuncs{
+			OnMessageQueuedFunc: func(id, _ string) {
+				mu.Lock()
+				queued = append(queued, id)
+				mu.Unlock()
+			},
+			OnQueuedMessageReadFunc: func(ids []string) {
+				mu.Lock()
+				read = append(read, ids...)
+				mu.Unlock()
+			},
+			OnFinishedFunc: func(o agent.Outcome) { done <- o },
+		}),
+	)))
+	// Wait until the run is inside the tool, then offer a message to it.
+	<-midTool
+	joined := a.FireOrQueue(agent.NewRequest(agent.ChatScenario, "also do this",
+		agent.WithRequestID("run-q-2"),
+		agent.WithIdentity("user-q", "chat-q", "p2p"),
+		agent.WithConversation("conv-q", "root-q", "msg-q-2"),
+	), func() string { return "also do this" }, "also do this")
+	require.True(t, joined, "the live run should have taken the message")
+	close(release)
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"run-q-2"}, queued, "no queued notification")
+	assert.Equal(t, []string{"run-q-2"}, read, "no read notification")
+	// The last model call saw the joined message as a user message.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.NotEmpty(t, m.seen)
+	var late *schema.Message
+	for _, msg := range m.seen {
+		if msg.Role == schema.User && strings.Contains(msg.Content, "also do this") {
+			late = msg
+		}
+	}
+	require.NotNil(t, late, "the joined message never reached the model")
+}
+
+func TestFireOrQueueUnreadRefiresAsOwnRun(t *testing.T) {
+	entered := make(chan struct{})
+	releaseTool := make(chan struct{})
+	releaseStream := make(chan struct{})
+	m := &fakeModel{turns: [][]*schema.Message{
+		{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+			ID: "call-r", Function: schema.FunctionCall{Name: blockingToolName, Arguments: "{}"},
+		}}}},
+		textChunks("answered the first message"),
+		// Consumed by the re-fired run for the unread message.
+		textChunks("answered the second message too"),
+	}}
+	a := newBlockingTestAgent(t, m, entered, releaseTool)
+
+	finished := make(chan agent.Outcome, 2)
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "first",
+		agent.WithRequestID("run-refire"),
+		agent.WithIdentity("user-r", "chat-r", "p2p"),
+		agent.WithConversation("conv-r", "root-r", "msg-r"),
+		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(o agent.Outcome) { finished <- o }}),
+	)))
+	<-entered
+	// Hold the run's second model call in the stream, so the second message
+	// arrives after the last tool boundary: nothing will read it.
+	m.mu.Lock()
+	m.hold = releaseStream
+	m.mu.Unlock()
+	close(releaseTool)
+	// Give the boundary read and the held stream call a moment, then offer.
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, a.FireOrQueue(agent.NewRequest(agent.ChatScenario, "second",
+		agent.WithRequestID("run-refire-2"),
+		agent.WithIdentity("user-r", "chat-r", "p2p"),
+		agent.WithConversation("conv-r", "root-r", "msg-r-2"),
+		// The listener rides the request, so the re-fired run reports too.
+		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(o agent.Outcome) { finished <- o }}),
+	), func() string { return "the second message" }, "second"))
+	close(releaseStream)
+
+	// The first run finishes, then the unread message runs as its own run —
+	// two finishes, and the re-fired run sees the message text.
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, finished))
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, finished))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.Equal(t, 3, m.calls, "the unread message should have run as its own model conversation")
+	var saw bool
+	for _, msg := range m.seen {
+		// The re-fired run carries the request's own Text; the producer body
+		// is only for reading into a live run.
+		if msg.Role == schema.User && msg.Content == "second" {
+			saw = true
+		}
+	}
+	assert.True(t, saw, "the re-fired message never reached a model")
+}
+
+func TestFireOrQueueIgnoresOtherUsersAndConversations(t *testing.T) {
+	midTool := make(chan struct{})
+	release := make(chan struct{})
+	m := &fakeModel{turns: [][]*schema.Message{
+		{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+			ID: "call-x", Function: schema.FunctionCall{Name: blockingToolName, Arguments: "{}"},
+		}}}},
+		textChunks("done"),
+	}}
+	a := newBlockingTestAgent(t, m, midTool, release)
+	done := make(chan agent.Outcome, 1)
+	require.NoError(t, a.Fire(agent.NewRequest(agent.ChatScenario, "work",
+		agent.WithRequestID("run-x"),
+		agent.WithIdentity("user-x", "chat-x", "p2p"),
+		agent.WithConversation("conv-x", "root-x", "msg-x"),
+		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(o agent.Outcome) { done <- o }}),
+	)))
+	<-midTool
+	// Same conversation, different user.
+	assert.False(t, a.FireOrQueue(agent.NewRequest(agent.ChatScenario, "aside",
+		agent.WithRequestID("run-y"),
+		agent.WithIdentity("user-y", "chat-x", "p2p"),
+		agent.WithConversation("conv-x", "root-x", "msg-y"),
+	), func() string { return "aside" }, "aside"), "another user's message must not join")
+	// Same user, different conversation.
+	assert.False(t, a.FireOrQueue(agent.NewRequest(agent.ChatScenario, "elsewhere",
+		agent.WithRequestID("run-z"),
+		agent.WithIdentity("user-x", "chat-z", "p2p"),
+		agent.WithConversation("conv-z", "root-z", "msg-z"),
+	), func() string { return "elsewhere" }, "elsewhere"), "another conversation's message must not join")
+	close(release)
+	require.Equal(t, agent.OutcomeCompleted, waitFinished(t, done))
 }
 
 func TestSyncAskContinuesAsyncAskEndsTurn(t *testing.T) {

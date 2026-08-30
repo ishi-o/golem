@@ -21,8 +21,11 @@ type MemoryTools struct {
 	dir string
 }
 
-// NewMemoryTools returns the memory tools over a user's memories folder.
-func NewMemoryTools(home *storage.UserHome) (*MemoryTools, error) {
+// NewMemoryTools returns the memory tools over the run's memories folder.
+// Memory is personal by design — the agent's notes about a user are not the
+// group's to read — so only the home's primary root is consulted even when
+// the run carries a group or tenant scope.
+func NewMemoryTools(home storage.Home) (*MemoryTools, error) {
 	dir, err := home.Folder(storage.FolderMemories)
 	if err != nil {
 		return nil, err
@@ -105,17 +108,21 @@ func (m *MemoryTools) Write() tool.InvokableTool {
 // with a SKILL.md describing what it is for. Read-only view plus management,
 // the read and management operations for user-owned skills.
 type SkillTools struct {
-	dir string
+	// dirs are the skills folders the run reads through, primary first; the
+	// first is where skills are written and deleted.
+	dirs []string
 }
 
-// NewSkillTools returns the skill tools over a user's skills folder. The
-// folder may not exist yet — listing then simply finds nothing.
-func NewSkillTools(home *storage.UserHome) (*SkillTools, error) {
-	dir, err := home.Folder(storage.FolderSkills)
+// NewSkillTools returns the skill tools over the run's skills folders: the
+// primary home's for everything, plus the group's and tenant's for reading,
+// so a skill the group shares is as usable as the user's own. A folder may
+// not exist yet — listing then simply finds nothing.
+func NewSkillTools(home storage.Home) (*SkillTools, error) {
+	dirs, err := home.Dirs(storage.FolderSkills)
 	if err != nil {
 		return nil, err
 	}
-	return &SkillTools{dir: dir}, nil
+	return &SkillTools{dirs: dirs}, nil
 }
 
 // List lists the skill tools, satisfying Builtin.
@@ -123,12 +130,28 @@ func (s *SkillTools) List() []tool.InvokableTool {
 	return []tool.InvokableTool{s.ListSkills(), s.Read(), s.Write(), s.Delete()}
 }
 
+// resolve finds a skill path: the primary's for writes and deletes, and for
+// reads the first folder holding it.
 func (s *SkillTools) resolve(name string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(name))
 	if strings.HasPrefix(clean, "..") {
 		return "", fmt.Errorf("skill path %q is outside the skills folder", name)
 	}
-	return filepath.Join(s.dir, clean), nil
+	return filepath.Join(s.dirs[0], clean), nil
+}
+
+func (s *SkillTools) resolveRead(name string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if strings.HasPrefix(clean, "..") {
+		return "", fmt.Errorf("skill path %q is outside the skills folder", name)
+	}
+	for _, dir := range s.dirs {
+		candidate := filepath.Join(dir, clean)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return filepath.Join(s.dirs[0], clean), nil
 }
 
 // ListSkills lists the skills with their descriptions.
@@ -143,26 +166,31 @@ func (s *SkillTools) ListSkills() tool.InvokableTool {
 	return MustTool(utils.InferTool(ToolNameListSkills,
 		"List the user's skills, with the description each skill's SKILL.md carries.",
 		func(ctx context.Context, _ struct{}) (output, error) {
-			entries, err := os.ReadDir(s.dir)
-			if os.IsNotExist(err) {
-				return output{}, nil
-			}
-			if err != nil {
-				return output{}, err
-			}
-			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			seen := map[string]bool{}
 			out := output{}
-			for _, e := range entries {
-				if !e.IsDir() {
+			for _, dir := range s.dirs {
+				entries, err := os.ReadDir(dir)
+				if os.IsNotExist(err) {
 					continue
 				}
-				name := e.Name()
-				desc := ""
-				if data, err := os.ReadFile(filepath.Join(s.dir, name, "SKILL.md")); err == nil {
-					desc = firstParagraph(string(data))
+				if err != nil {
+					return output{}, err
 				}
-				out.Skills = append(out.Skills, skill{Name: name, Desc: desc})
+				for _, e := range entries {
+					if !e.IsDir() || seen[e.Name()] {
+						continue
+					}
+					// The primary's skill wins a name collision: it is the
+					// one writes and deletes touch.
+					seen[e.Name()] = true
+					desc := ""
+					if data, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md")); err == nil {
+						desc = firstParagraph(string(data))
+					}
+					out.Skills = append(out.Skills, skill{Name: e.Name(), Desc: desc})
+				}
 			}
+			sort.Slice(out.Skills, func(i, j int) bool { return out.Skills[i].Name < out.Skills[j].Name })
 			return out, nil
 		}))
 }
@@ -178,7 +206,7 @@ func (s *SkillTools) Read() tool.InvokableTool {
 			Skill string `json:"skill"`
 			File  string `json:"file"`
 		}) (output, error) {
-			path, err := s.resolve(in.Skill + "/" + in.File)
+			path, err := s.resolveRead(in.Skill + "/" + in.File)
 			if err != nil {
 				return output{}, err
 			}

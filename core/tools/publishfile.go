@@ -28,17 +28,18 @@ import (
 type PublishFileTools struct {
 	repos     store.PublishedResourceStore
 	storage   storage.Storage
-	workspace *storage.UserHome
+	workspace storage.Home
 	// baseURL is the origin the printed links point at — the app's public
 	// origin, distinct from the storage root.
 	baseURL string
 	clock   func() time.Time
 }
 
-// NewPublishFileTools constructs the publish tools. workspace is the user whose
-// files may be published — the tools refuse anything outside it, the same
-// containment check the share handler applies on the way out.
-func NewPublishFileTools(repos store.PublishedResourceStore, store storage.Storage, workspace *storage.UserHome, baseURL string) *PublishFileTools {
+// NewPublishFileTools constructs the publish tools. workspace is the run's
+// home — the tools refuse anything outside the roots it spans (the user's
+// own, and the group's or tenant's when the run carries that scope), the
+// same containment check the share handler applies on the way out.
+func NewPublishFileTools(repos store.PublishedResourceStore, store storage.Storage, workspace storage.Home, baseURL string) *PublishFileTools {
 	return &PublishFileTools{repos: repos, storage: store, workspace: workspace, baseURL: baseURL, clock: time.Now}
 }
 
@@ -67,22 +68,21 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// resolveFile checks the path is inside the user's workspace and exists.
-func (p *PublishFileTools) resolveFile(path string) (string, error) {
+// resolveFile checks the path is inside one of the run's workspace roots
+// and exists. It returns the file and the root it sits under — the root the
+// published copy's key is relative to.
+func (p *PublishFileTools) resolveFile(path string) (string, string, error) {
 	clean := filepath.Clean(filepath.FromSlash(path))
-	if !p.workspace.Contains(filepath.Join(p.workspace.Root(), clean)) {
-		return "", fmt.Errorf("path %q is outside the workspace; only workspace files can be published", path)
+	if strings.HasPrefix(clean, "..") {
+		return "", "", fmt.Errorf("path %q is outside the workspace; only workspace files can be published", path)
 	}
-	full := filepath.Join(p.workspace.Root(), clean)
-	info, err := os.Stat(full)
-	if err != nil {
-		return "", err
+	for _, root := range p.workspace.Roots() {
+		candidate := filepath.Join(root, clean)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, root, nil
+		}
 	}
-	if info.IsDir() && p.baseURL == "" {
-		// A directory publish needs an entry file; allowed, but noted.
-		_ = info.IsDir()
-	}
-	return full, nil
+	return "", "", fmt.Errorf("path %q is outside the workspace; only workspace files can be published", path)
 }
 
 func (p *PublishFileTools) urlFor(visibility store.Visibility, userID, token, entry string) string {
@@ -124,7 +124,7 @@ func (p *PublishFileTools) Publish() tool.InvokableTool {
 			if !ok {
 				visibility = store.VisibilityPublic
 			}
-			full, err := p.resolveFile(in.Path)
+			full, base, err := p.resolveFile(in.Path)
 			if err != nil {
 				return "", err
 			}
@@ -149,7 +149,7 @@ func (p *PublishFileTools) Publish() tool.InvokableTool {
 			}
 
 			token := newToken()
-			rel, err := filepath.Rel(p.workspace.Root(), full)
+			rel, err := filepath.Rel(base, full)
 			if err != nil {
 				return "", err
 			}
@@ -196,11 +196,11 @@ func (p *PublishFileTools) Update() tool.InvokableTool {
 				return "", fmt.Errorf("no published resource %s owned by you", in.Token)
 			}
 			if in.Mode != "refresh" {
-				full, err := p.resolveFile(in.Path)
+				full, base, err := p.resolveFile(in.Path)
 				if err != nil {
 					return "", err
 				}
-				rel, _ := filepath.Rel(p.workspace.Root(), full)
+				rel, _ := filepath.Rel(base, full)
 				key := fmt.Sprintf("%s/%s/%s/%s", strings.ToLower(string(resource.Visibility)), userID, in.Token, filepath.ToSlash(rel))
 				if err := copyInto(p.storage, full, key); err != nil {
 					return "", err

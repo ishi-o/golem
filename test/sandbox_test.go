@@ -28,16 +28,16 @@ type fakeSandbox struct {
 	removeOK bool
 }
 
-func (f *fakeSandbox) Ensure(_ context.Context, userID string) (tools.SandboxSession, error) {
+func (f *fakeSandbox) Ensure(_ context.Context, identity tools.SandboxIdentity) (tools.SandboxSession, error) {
 	f.mu.Lock()
-	f.ensures = append(f.ensures, userID)
+	f.ensures = append(f.ensures, identity.Key())
 	f.mu.Unlock()
 	return &f.session, nil
 }
 
-func (f *fakeSandbox) Remove(_ context.Context, userID string) (bool, error) {
+func (f *fakeSandbox) Remove(_ context.Context, identity tools.SandboxIdentity) (bool, error) {
 	f.mu.Lock()
-	f.removes = append(f.removes, userID)
+	f.removes = append(f.removes, identity.Key())
 	f.mu.Unlock()
 	return f.removeOK, nil
 }
@@ -143,9 +143,9 @@ func TestKubernetesSandboxReusesAndRemovesLabeledUserJobs(t *testing.T) {
 		PVCMounts:  []kubesandbox.PVCMount{{PVCName: "workspace", MountPath: "/workspace"}},
 	})
 	require.NoError(t, err)
-	_, err = sandbox.Ensure(context.Background(), userID)
+	_, err = sandbox.Ensure(context.Background(), tools.SandboxIdentity{UserID: userID})
 	require.NoError(t, err)
-	removed, err := sandbox.Remove(context.Background(), userID)
+	removed, err := sandbox.Remove(context.Background(), tools.SandboxIdentity{UserID: userID})
 	require.NoError(t, err)
 	assert.True(t, removed)
 	_, err = client.BatchV1().Jobs("default").Get(context.Background(), "shell-job", metav1.GetOptions{})

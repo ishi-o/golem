@@ -1,5 +1,21 @@
 {
   "question-asked": "DONE. Your questions are now in front of the user. Do not ask again and do not guess an answer: stop here and end your turn. You will be started again with their answer if it comes.",
   "question-already-asked": "ALREADY ASKED AND STILL UNANSWERED. You have put this to the user and they have not replied yet. Asking again does nothing. Stop here and end your turn without calling any further tools; you will be started again with their answer if it comes.",
-  "question-cannot-ask": "COULD NOT ASK. The question could not be shown to the user on any channel, so no answer is coming. Carry on with what you know, and say which assumption you made."
+  "question-cannot-ask": "COULD NOT ASK. The question could not be shown to the user on any channel, so no answer is coming. Carry on with what you know, and say which assumption you made.",
+  "subagent-empty-prompt": "Error: the prompt is required, and has to say the whole task.",
+  "subagent-shutting-down": "The agent is shutting down; no subagent can be started now.",
+  "subagent-too-many": "You already have %d subagents running, which is the limit; wait for one to finish or cancel one first.",
+  "subagent-could-not-start": "The subagent could not be started: %s",
+  "subagent-started": "Subagent %s started (%s). Collect its answer with WaitForSubagent before you finish your turn.",
+  "subagent-unknown": "No subagent %s belongs to this run.",
+  "subagent-still-running": "%s (%s) is still working after %s; call WaitForSubagent again to keep waiting, or CancelSubagent if you no longer need its answer.",
+  "subagent-wait-timed-out": "%s did not finish within %s and has been cancelled.",
+  "subagent-interrupted": "The wait for %s was interrupted; the subagent itself does not stop or lose anything.",
+  "subagent-answer": "The answer from %s (%s):",
+  "subagent-no-answer": "%s finished without saying anything.",
+  "subagent-cancelled": "%s was cancelled before it finished.",
+  "subagent-failed": "%s failed: %s",
+  "subagent-already-finished": "%s has already finished (%s); there is nothing to cancel.",
+  "subagent-cancel-requested": "Cancellation requested for %s; there will be no answer to collect.",
+  "queued-message": "While you were working, the user sent another message in this conversation:\n\n%s\n\nIt is part of this turn: take it into account as you continue."
 }

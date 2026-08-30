@@ -58,6 +58,11 @@ or mounted on your own HTTP service at any route of your choosing, e.g.
   does not see acknowledged, and a retry must not start a duplicate run.
 - **Duplicate protection.** Message ids are recorded in the backend's
   processed-message store; a redelivered event is dropped, not re-run.
+- **Messages join a live run.** A message arriving while this conversation's
+  run is still working is offered to that run (`FireOrQueue`) and read into
+  the turn at its next tool boundary — a correction reaches the turn it
+  corrects. When no run is live (or it stopped reading), the message fires
+  as a run of its own; the duplicate claim covers it either way.
 - **Questions.** The ask tool surfaces as interactive cards; answers arrive
   as card actions and resume the run (subject to the question TTL — the
   same `GOLEM_ASK_USER_TTL` idea, passed programmatically here via

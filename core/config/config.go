@@ -52,6 +52,9 @@ type AI struct {
 	// empty means the defaults above.
 	SystemPrompt        string
 	ScheduledTaskPrompt string
+	// SubagentPrompt wraps the brief a subagent was started with; empty
+	// means DefaultSubagentPrompt.
+	SubagentPrompt string
 
 	// Admins are user ids the runtime treats as privileged, comma-separated
 	// in the environment.
@@ -83,6 +86,7 @@ type Tools struct {
 	PublishFile     PublishFile
 	MCP             MCP
 	ToolSearch      ToolSearch
+	Subagent        Subagent
 }
 
 // AskUserQuestion configures the ask tool. The TTL bounds how long a
@@ -117,6 +121,19 @@ type ToolSearch struct {
 	EnableThreshold int
 }
 
+// Subagent configures the subagent tools (core/subagent). MaxConcurrent
+// bounds the subagents one run may have in flight at once; WaitPoll bounds
+// one WaitForSubagent call before it hands the turn back to the model, which
+// is what stops a wait from holding a turn for good; WaitTimeout is the age
+// at which a subagent is treated as faulted rather than slow and cancelled —
+// it also bounds how long a parent run is held open for its children, so it
+// must stay within the agent's shutdown drain window.
+type Subagent struct {
+	MaxConcurrent int
+	WaitPoll      time.Duration
+	WaitTimeout   time.Duration
+}
+
 // Normalize fills in defaults and is idempotent. It returns an error rather
 // than silently fixing contradictory input.
 func (c *Config) Normalize() error {
@@ -125,6 +142,9 @@ func (c *Config) Normalize() error {
 	}
 	if strings.TrimSpace(c.AI.ScheduledTaskPrompt) == "" {
 		c.AI.ScheduledTaskPrompt = DefaultScheduledTaskPrompt
+	}
+	if strings.TrimSpace(c.AI.SubagentPrompt) == "" {
+		c.AI.SubagentPrompt = DefaultSubagentPrompt
 	}
 	if c.AI.GuideThreshold <= 0 {
 		c.AI.GuideThreshold = DefaultGuideThreshold
@@ -138,6 +158,17 @@ func (c *Config) Normalize() error {
 	}
 	if c.AI.Tools.ToolSearch.EnableThreshold <= 0 {
 		c.AI.Tools.ToolSearch.EnableThreshold = 20
+	}
+	if c.AI.Tools.Subagent.MaxConcurrent <= 0 {
+		c.AI.Tools.Subagent.MaxConcurrent = 10
+	}
+	if c.AI.Tools.Subagent.WaitPoll <= 0 {
+		c.AI.Tools.Subagent.WaitPoll = time.Minute
+	}
+	if c.AI.Tools.Subagent.WaitTimeout <= 0 {
+		// Within the agent's ten-minute shutdown drain: a parent waiting on
+		// a straggler counts as in-flight.
+		c.AI.Tools.Subagent.WaitTimeout = 10 * time.Minute
 	}
 	if c.Storage.Location == "" {
 		c.Storage.Location = "data"

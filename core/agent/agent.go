@@ -54,7 +54,29 @@ type Agent struct {
 	accepting atomic.Bool
 	inFlight  atomic.Int64
 	mu        sync.Mutex
-	cancels   map[string]context.CancelFunc
+	liveRuns  map[string]*liveRun
+}
+
+// liveRun is one run in flight: what Cancel needs, the listeners a
+// subagent's progress is reported to, and the children a run must outlive.
+type liveRun struct {
+	cancel  context.CancelFunc
+	request Request
+	// cancelled is set by Cancel; a child registered after its parent was
+	// cancelled reads it at its loop head, because there is no context to
+	// inherit through Fire.
+	cancelled atomic.Bool
+	// listeners is assigned once, after the run's OnStart additions have
+	// joined; subagents only start from tool calls, which happen after that.
+	listeners []ResponseListener
+	// children maps each subagent's request id to a channel closed when that
+	// subagent has finished. The parent waits on these before reporting
+	// itself finished, so a subagent nobody collected is still paid for and
+	// still reported.
+	children map[string]chan struct{}
+	// queued is where a reply that arrives while the run is in flight joins
+	// it; see FireOrQueue.
+	queued *queuedMessages
 }
 
 // AgentOption configures an Agent during construction.
@@ -100,10 +122,24 @@ func WithDefaultListener(listener ResponseListener) AgentOption {
 	}
 }
 
+// AddDefaultListener adds a listener that observes every run, for observers
+// that only come into existence after the agent was constructed — the
+// subagent tools, which learn at Fire time which run's registry to forget.
+// Call before the first Fire: a race against a starting run means that run
+// may or may not carry the listener, never a corruption.
+func (a *Agent) AddDefaultListener(l ResponseListener) {
+	if l == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.defaultListeners = append(a.defaultListeners, l)
+}
+
 // New constructs an Agent and starts accepting runs.
 func New(m model.ToolCallingChatModel, mem chatmemory.Repository, provider *tools.Provider, cfg config.Config, options ...AgentOption) *Agent {
 	_ = cfg.Normalize()
-	a := &Agent{model: m, memory: mem, provider: provider, config: cfg, log: slog.Default(), cancels: map[string]context.CancelFunc{}}
+	a := &Agent{model: m, memory: mem, provider: provider, config: cfg, log: slog.Default(), liveRuns: map[string]*liveRun{}}
 	for _, option := range options {
 		if option != nil {
 			option(a)
@@ -137,15 +173,120 @@ func (a *Agent) Fire(req Request) error {
 }
 
 // Cancel stops a run by request id. False when no such run is live — already
-// finished, or never started.
+// finished, or never started. The cancellation goes down the tree as well:
+// a subagent nobody is waiting for any more is still work with a shell or an
+// MCP call in it, and cancelling the parent alone would leave it running.
 func (a *Agent) Cancel(requestID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	cancel, ok := a.cancels[requestID]
-	if ok {
-		cancel()
+	if run, ok := a.liveRuns[requestID]; ok {
+		a.cancelTreeLocked(requestID, run)
+		return true
 	}
-	return ok
+	return false
+}
+
+// FireOrQueue offers a message to the run already in flight over the same
+// conversation, by the same user — a correction, an addition, an answer to
+// "should I go on?" arriving while the agent works. True means the run took
+// it: it is read into the turn at the next tool boundary, and this message
+// needs no run of its own. False means nobody matching is live (or the run
+// had already stopped reading), and the caller should Fire the request —
+// which is why this does not fire on the caller's behalf: the caller built
+// the request and owns what a refusal of it means.
+//
+// A run matches when it is of the same conversation and the same user, not
+// a background run and not a subagent: a group card being public does not
+// make someone else's aside a correction of this run, and a subagent has no
+// conversation to correct.
+func (a *Agent) FireOrQueue(req Request, text func() string, display string) bool {
+	a.mu.Lock()
+	var target *liveRun
+	for _, run := range a.liveRuns {
+		if req.ConversationID != "" &&
+			run.request.ConversationID == req.ConversationID &&
+			run.request.UserID == req.UserID &&
+			!run.request.Background &&
+			run.request.ParentRequestID == "" {
+			target = run
+			break
+		}
+	}
+	if target == nil {
+		a.mu.Unlock()
+		return false
+	}
+	queued := target.queued
+	listeners := target.listeners
+	a.mu.Unlock()
+	// Offered outside the agent lock: the queue is closed under its own
+	// lock, so a run that ends between the two calls makes offer return
+	// false, and the caller falls back to firing — never a lost message.
+	if !queued.offer(req, text, display) {
+		return false
+	}
+	for _, l := range listeners {
+		safeNotify(a, "OnMessageQueued", l, func(li ResponseListener) { li.OnMessageQueued(req.RequestID, display) })
+	}
+	return true
+}
+
+func (a *Agent) cancelTreeLocked(requestID string, run *liveRun) {
+	run.cancelled.Store(true)
+	run.cancel()
+	for childID := range run.children {
+		if child, live := a.liveRuns[childID]; live {
+			a.cancelTreeLocked(childID, child)
+		}
+	}
+}
+
+// notifySubagent reports a subagent event to the listeners of the run that
+// started it.
+func notifySubagent(a *Agent, parent *liveRun, event SubagentEvent) {
+	for _, l := range parent.listeners {
+		safeNotify(a, "OnSubagent", l, func(li ResponseListener) { li.OnSubagent(event) })
+	}
+}
+
+// waitProgressInterval is how often a run waiting on its subagents says so:
+// silence for half an hour is indistinguishable from the hang this replaced.
+const waitProgressInterval = 30 * time.Second
+
+// awaitChildren waits for every run this one started that has not ended. A
+// subagent is work the turn asked for, and abandoning it halfway would leave
+// a shell command or an MCP call running with nothing watching it — so this
+// waits, and generously. But not for ever: past the ceiling this is a fault
+// rather than slow work, so it is said out loud and the run stops being held
+// for it. Runs on the run's own goroutine, so plain blocking is safe.
+func (a *Agent) awaitChildren(requestID string, live *liveRun) {
+	if len(live.children) == 0 {
+		return
+	}
+	timeout := a.config.AI.Tools.Subagent.WaitTimeout
+	a.log.Info("waiting for subagents to finish", "run", requestID, "count", len(live.children), "timeout", timeout)
+	deadline := time.Now().Add(timeout)
+	for childID, done := range live.children {
+		for {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				a.log.Error("subagent did not finish in time; cancelling it", "run", requestID, "subagent", childID, "timeout", timeout)
+				a.Cancel(childID)
+				break
+			}
+			slice := remaining
+			if slice > waitProgressInterval {
+				slice = waitProgressInterval
+			}
+			select {
+			case <-done:
+			case <-time.After(slice):
+				a.log.Info("still waiting for subagent", "run", requestID, "subagent", childID)
+				continue
+			}
+			break
+		}
+	}
 }
 
 // Shutdown stops accepting and waits for in-flight runs, up to ten minutes —
@@ -220,31 +361,97 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 	// stopped by Cancel ends CANCELLED, not FAILED.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	live := &liveRun{cancel: cancel, request: req, children: map[string]chan struct{}{}}
+	live.queued = &queuedMessages{onRead: func(ids []string) {
+		for _, l := range live.listeners {
+			safeNotify(a, "OnQueuedMessageRead", l, func(li ResponseListener) { li.OnQueuedMessageRead(ids) })
+		}
+	}}
 	if req.RequestID != "" {
 		a.mu.Lock()
-		a.cancels[req.RequestID] = cancel
+		a.liveRuns[req.RequestID] = live
 		a.mu.Unlock()
+		// Removed at the end of finish, and not before: while the run is
+		// waiting out its subagents it must stay cancellable — that wait is
+		// exactly when cancelling it is what would release it.
 		defer func() {
 			a.mu.Lock()
-			delete(a.cancels, req.RequestID)
+			delete(a.liveRuns, req.RequestID)
 			a.mu.Unlock()
 		}()
+	}
+
+	// The run that started this one, if it is still going. A parent that has
+	// already ended is left out of everything below: there is nobody there to
+	// tell, and nobody waiting.
+	var parent *liveRun
+	var doneForParent chan struct{}
+	if req.ParentRequestID != "" && req.RequestID != "" {
+		a.mu.Lock()
+		if p, ok := a.liveRuns[req.ParentRequestID]; ok {
+			parent = p
+			doneForParent = make(chan struct{})
+			parent.children[req.RequestID] = doneForParent
+		}
+		a.mu.Unlock()
+		if parent != nil {
+			defer func() {
+				// Last of all: the parent is held open on this channel, so
+				// anything that skipped closing it would hold that run open
+				// until the application shut down.
+				a.mu.Lock()
+				delete(parent.children, req.RequestID)
+				a.mu.Unlock()
+				close(doneForParent)
+			}()
+		}
 	}
 	close(ready)
 
 	runContext := &RunContext{request: req}
-	state := &runState{a: a, listeners: append(append([]ResponseListener(nil), a.defaultListeners...), req.Listeners...)}
+	a.mu.Lock()
+	defaults := append([]ResponseListener(nil), a.defaultListeners...)
+	a.mu.Unlock()
+	state := &runState{a: a, listeners: append(defaults, req.Listeners...)}
 
 	cancelled := false
 	var composition *tools.Composition
+	// content accumulates the run's answer; it outlives the loop because the
+	// parent's end-of-subagent report carries the final answer.
+	content := &strings.Builder{}
 
 	finish := func(outcome Outcome, err error) {
+		// First of all: the model has stopped, so nothing can be read into
+		// this run any more, and a message arriving from here on has to be
+		// answered some other way. Before the wait below, which is measured
+		// in minutes the queue would be dead for.
+		unread := live.queued.close()
 		if err != nil {
 			state.notifyAll("OnError", func(l ResponseListener) { l.OnError(err) })
 		}
+		// Before this run reports itself finished: the subagents it started
+		// are still going, and they belong to it — an answer nobody collected
+		// is still paid for and still attributable.
+		a.awaitChildren(req.RequestID, live)
 		state.notifyAll("OnFinished", func(l ResponseListener) { l.OnFinished(outcome) })
+		if parent != nil {
+			notifySubagent(a, parent, SubagentEvent{
+				SubagentID: req.RequestID, Description: req.Description,
+				ContentSoFar: content.String(), Outcome: outcome,
+			})
+		}
 		if composition != nil && composition.Close != nil {
 			composition.Close()
+		}
+		// Last, once this run has let go of everything it held: whatever the
+		// user said that the run never got round to reading is a message
+		// nobody has answered, so it is answered now, as the run it would
+		// have been. After OnFinished above rather than before, so the
+		// answer it starts appears under one that has already been finalized.
+		for _, late := range unread {
+			if err := a.Fire(late); err != nil {
+				a.log.Error("re-firing a message the run never read failed", "run", late.RequestID, "err", err)
+			}
 		}
 	}
 	if a.model == nil {
@@ -256,6 +463,10 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 	// other callback fires.
 	state.notifyAll("OnStart", func(l ResponseListener) { l.OnStart(runContext) })
 	state.listeners = append(state.listeners, runContext.listenerSnapshot()...)
+	live.listeners = state.listeners
+	if parent != nil {
+		notifySubagent(a, parent, SubagentEvent{SubagentID: req.RequestID, Description: req.Description})
+	}
 
 	if reason := runContext.AbortReason(); reason != "" {
 		finish(OutcomeFailed, fmt.Errorf("run aborted before it started: %s", reason))
@@ -288,6 +499,8 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 		ScenarioOffers:     req.Scenario.Offers,
 		UserID:             req.UserID,
 		ChatID:             req.ChatID,
+		GroupID:            req.GroupID,
+		TenantID:           req.TenantID,
 		TodoHandler:        todoFan,
 		Questions:          a.asking(runCtx, req, questionHandler),
 		AnswersArriveLater: answersArriveLater,
@@ -323,16 +536,32 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 
 	var modelOnce sync.Once
 	modelName := ""
-	content := &strings.Builder{}
 	reportContent := func(soFar string) {
 		state.notifyAll("OnContent", func(l ResponseListener) { l.OnContent(soFar) })
+		// Up to the parent as its own kind of event, never as content: a
+		// surface renders content as the reply, so handing it the
+		// subagent's would overwrite the parent's answer.
+		if parent != nil {
+			notifySubagent(a, parent, SubagentEvent{
+				SubagentID: req.RequestID, Description: req.Description, ContentSoFar: soFar,
+			})
+		}
+	}
+	// Reasoning accumulates like content but per model call: each call's
+	// thinking is one block, and the callback carries the blocks so far with
+	// the current call's at the end.
+	var reasoningBlocks []string
+	reportReasoning := func(call string) {
+		soFar := strings.Join(append(append([]string(nil), reasoningBlocks...), call), "\n\n")
+		state.notifyAll("OnReasoning", func(l ResponseListener) { l.OnReasoning(soFar) })
 	}
 
 	for iteration := 0; ; iteration++ {
-		if ctx.Err() != nil || !state.shouldContinue() {
+		if ctx.Err() != nil || (parent != nil && parent.cancelled.Load()) || !state.shouldContinue() {
 			cancelled = true
 			break
 		}
+		callReasoning := &strings.Builder{}
 		reader, err := modelWithTools.Stream(runCtx, messages)
 		if err != nil {
 			if runCtx.Err() != nil {
@@ -365,6 +594,17 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 				content.WriteString(chunk.Content)
 				reportContent(content.String())
 			}
+			if chunk.ReasoningContent != "" {
+				// Some providers stream the whole call's thinking so far on
+				// every chunk rather than the delta; a chunk that already
+				// contains what was accumulated is one of those, so it
+				// replaces the buffer instead of appending to it.
+				if soFar := callReasoning.String(); soFar != "" && strings.HasPrefix(chunk.ReasoningContent, soFar) {
+					callReasoning.Reset()
+				}
+				callReasoning.WriteString(chunk.ReasoningContent)
+				reportReasoning(callReasoning.String())
+			}
 			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.TotalTokens > 0 {
 				usage := chunk.ResponseMeta.Usage
 				name := modelName
@@ -377,9 +617,28 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 					state.notifyAll("OnModel", func(l ResponseListener) { l.OnModel(finalName) })
 				})
 				state.notifyAll("OnUsage", func(l ResponseListener) { l.OnUsage(modelName, usage) })
+				// Tokens a subagent spends are spent on the parent's turn,
+				// so they belong in the count the parent shows — as usage
+				// for the turn's total, and again as a subagent event so a
+				// surface showing each subagent separately knows whose spend
+				// this was.
+				if parent != nil {
+					for _, l := range parent.listeners {
+						safeNotify(a, "OnUsage", l, func(li ResponseListener) { li.OnUsage(modelName, usage) })
+					}
+					notifySubagent(a, parent, SubagentEvent{
+						SubagentID: req.RequestID, Description: req.Description,
+						Model: modelName, Usage: usage,
+					})
+				}
 			}
 		}
 		reader.Close()
+		// The call's thinking is done; the next model call, if any, starts a
+		// new block.
+		if block := callReasoning.String(); block != "" {
+			reasoningBlocks = append(reasoningBlocks, block)
+		}
 		if len(chunks) == 0 {
 			break
 		}
@@ -419,6 +678,14 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 			// the result is for the application and the next run, not for
 			// the model to continue from.
 			break
+		}
+		// A reply that arrived while the turn was working joins it here, at
+		// the tool boundary: all tool calls of the iteration are answered
+		// and nothing is outstanding — the one safe point in the loop.
+		for _, text := range live.queued.read() {
+			late := &schema.Message{Role: schema.User, Content: a.message(i18n.QueuedMessage, text)}
+			messages = append(messages, late)
+			newMessages = append(newMessages, late)
 		}
 	}
 
@@ -485,9 +752,9 @@ func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Comp
 }
 
 // message resolves a localized runtime string.
-func (a *Agent) message(key string) string {
+func (a *Agent) message(key string, args ...any) string {
 	if a.messages != nil {
-		return a.messages.Get(key)
+		return a.messages.Get(key, args...)
 	}
 	return key
 }

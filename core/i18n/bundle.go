@@ -30,6 +30,9 @@ const (
 	// QuestionCannotAsk is the model-facing instruction when no surface
 	// could present the questions at all.
 	QuestionCannotAsk = "question-cannot-ask"
+	// QueuedMessage frames a message that joined the run in flight, read
+	// into the turn at a tool boundary.
+	QueuedMessage = "queued-message"
 )
 
 // Bundle resolves keys to localized strings. The zero value resolves nothing;

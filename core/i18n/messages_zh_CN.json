@@ -1,5 +1,21 @@
 {
   "question-asked": "已完成。你的问题现在已经摆在用户面前了。不要再问一次，也不要臆测答案：就在此停下并结束本轮。如果用户作答，你会被重新唤起并收到他们的回答。",
   "question-already-asked": "已经提问且仍未得到回答。你已经把问题交给用户，他们还没有回复。再问一次没有任何作用。就在此停下并结束本轮，不要再调用任何工具；如果用户作答，你会被重新唤起并收到他们的回答。",
-  "question-cannot-ask": "无法提问。这些问题无法在任何渠道展示给用户，因此不会有回答。请根据你已知的信息继续，并说明你所做的假设。"
+  "question-cannot-ask": "无法提问。这些问题无法在任何渠道展示给用户，因此不会有回答。请根据你已知的信息继续，并说明你所做的假设。",
+  "subagent-empty-prompt": "错误：prompt 为必填项，且必须写明完整任务。",
+  "subagent-shutting-down": "智能体正在关闭，现在无法启动子智能体。",
+  "subagent-too-many": "你已经有 %d 个子智能体在运行，已达上限；请先等待其中一个完成，或取消其中一个。",
+  "subagent-could-not-start": "子智能体无法启动：%s",
+  "subagent-started": "子智能体 %s 已启动（%s）。在结束本轮之前，请用 WaitForSubagent 收取它的答案。",
+  "subagent-unknown": "没有属于本次运行的子智能体 %s。",
+  "subagent-still-running": "%s（%s）已运行 %s，仍在工作中；请再次调用 WaitForSubagent 继续等待，如果不再需要它的答案，请调用 CancelSubagent。",
+  "subagent-wait-timed-out": "%s 未在 %s 内完成，已被取消。",
+  "subagent-interrupted": "对 %s 的等待被中断；子智能体本身不会因此停止，也不会丢失任何进展。",
+  "subagent-answer": "来自 %s（%s）的答案：",
+  "subagent-no-answer": "%s 已完成，但没有给出任何回答。",
+  "subagent-cancelled": "%s 在完成之前被取消了。",
+  "subagent-failed": "%s 失败了：%s",
+  "subagent-already-finished": "%s 已经结束（%s），没有可取消的内容。",
+  "subagent-cancel-requested": "已请求取消 %s；之后将没有答案可收取。",
+  "queued-message": "在你工作的同时，用户在这个会话中又发来一条消息：\n\n%s\n\n它属于本轮：请在继续时将其考虑在内。"
 }

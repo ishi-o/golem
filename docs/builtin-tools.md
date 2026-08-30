@@ -26,6 +26,7 @@ composition treat them all the same way.
 | Shell | `SandboxTools` | `Bash`, `BashOutput`, `KillShell`, `RestartShellContainer`/`RestartShellPod` |
 | Credentials | `CredentialTools` | `SetCredential`, `ListCredentials`, `DeleteCredential` |
 | Schedule | `schedule.Tools` | `CreateScheduledTask`, `ListScheduledTasks`, `CancelScheduledTask` |
+| Subagents | `subagent.Tools` | `StartSubagent`, `WaitForSubagent`, `CancelSubagent` |
 
 External MCP tools can be registered alongside the built-ins — see
 [Extending](extending.md#mcp-servers).
@@ -38,8 +39,8 @@ asking user's workspace and wired to that run's handlers. They are not
 registered and cannot be: their inputs only exist per run. You get them
 automatically from `tools.NewProvider`.
 
-**Process-wide families** — shell, credentials, schedule — are registered
-once during application setup, in one explicit call:
+**Process-wide families** — shell, credentials, schedule, subagents — are
+registered once during application setup, in one explicit call:
 
 ```go
 err := tools.RegisterBuiltins(provider, tools.Builtins{
@@ -49,7 +50,9 @@ err := tools.RegisterBuiltins(provider, tools.Builtins{
 ```
 
 The schedule family has its own registration in `core/schedule` (it needs
-the runner) — see [Scheduled tasks](scheduled-tasks.md). Credential tools
+the runner) — see [Scheduled tasks](scheduled-tasks.md) — and the subagent
+family in `core/subagent` (it needs the agent) — see
+[Subagents](subagents.md). Credential tools
 join the shell family automatically when a credential store is configured:
 `RegisterBuiltins` fills `SandboxConfig.Credentials` from the provider's
 store when nil.

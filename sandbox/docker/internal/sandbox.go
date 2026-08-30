@@ -121,47 +121,58 @@ func New(config Config) (*Sandbox, error) {
 	return &Sandbox{client: config.Client, config: config, log: config.Logger, containers: map[string]string{}, locks: map[string]*sync.Mutex{}}, nil
 }
 
-// Ensure returns a running container for userID, creating one on first use.
-func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.SandboxSession, error) {
-	if strings.TrimSpace(userID) == "" {
+// Ensure returns a running container for the identity, creating one on
+// first use. The identity — user, group and tenant together — is what the
+// container is keyed on, so two scopes never share a container; each
+// scope's home is bind-mounted at its own path, and the user's home is the
+// working directory.
+func (s *Sandbox) Ensure(ctx context.Context, identity golemtools.SandboxIdentity) (golemtools.SandboxSession, error) {
+	if strings.TrimSpace(identity.UserID) == "" {
 		return nil, errors.New("docker sandbox: user id is required")
 	}
-	lock := s.lockFor(userID)
+	key := identity.Key()
+	lock := s.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
-	if id := s.containerFor(userID); id != "" {
+	if id := s.containerFor(key); id != "" {
 		if running, err := s.isRunning(ctx, id); err == nil && running {
 			return session{sandbox: s, id: id}, nil
 		}
 		_ = s.removeContainer(context.Background(), id)
-		s.forget(userID, id)
+		s.forget(key, id)
 	}
 
 	// A process restart should not create a second sandbox while an earlier
 	// one is still alive. Labels are the durable registry; the in-memory map is
 	// only the fast path.
 	existing, err := s.client.ContainerList(ctx, client.ContainerListOptions{
-		Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(userID)),
+		Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(key)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list sandbox containers: %w", err)
 	}
 	if len(existing.Items) > 0 {
 		id := existing.Items[0].ID
-		s.remember(userID, id)
+		s.remember(key, id)
 		return session{sandbox: s, id: id}, nil
 	}
 
-	home := s.config.Workspaces.ForOwner(userID).Root()
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		return nil, fmt.Errorf("create user workspace: %w", err)
+	home := s.config.Workspaces.ForOwner(identity.UserID).Root()
+	binds := []string{}
+	for _, dir := range s.workspaceDirs(identity) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create workspace directory: %w", err)
+		}
+		// Each scope's home is mounted at its own host path, so the
+		// container sees the same layout the file tools do.
+		binds = append(binds, dir+":"+dir)
 	}
-	credentials, err := s.credentials(ctx, userID)
+	credentials, err := s.credentials(ctx, identity.UserID)
 	if err != nil {
 		return nil, err
 	}
-	labels := map[string]string{LabelSandbox: "true", LabelOwner: userKey(userID), LabelRole: LabelRoleUser}
+	labels := map[string]string{LabelSandbox: "true", LabelOwner: userKey(key), LabelRole: LabelRoleUser}
 	containerConfig := &container.Config{
 		Image:      s.config.Image,
 		WorkingDir: home,
@@ -173,7 +184,7 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 		Cmd:    []string{"sh", "-c", watchdogScript(s.config.IdleTimeout, s.config.HardDeadline)},
 	}
 	hostConfig := &container.HostConfig{
-		Binds: []string{home + ":" + home},
+		Binds: binds,
 		Resources: container.Resources{
 			NanoCPUs: mustInt64(s.config.CPULimit),
 			Memory:   mustInt64(s.config.MemoryLimit),
@@ -185,7 +196,7 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 	}
 	startCtx, cancel := context.WithTimeout(ctx, s.config.StartupTimeout)
 	defer cancel()
-	name := containerName(userID)
+	name := containerName(key)
 	created, err := s.client.ContainerCreate(startCtx, client.ContainerCreateOptions{
 		Config:           containerConfig,
 		HostConfig:       hostConfig,
@@ -199,28 +210,43 @@ func (s *Sandbox) Ensure(ctx context.Context, userID string) (golemtools.Sandbox
 		_, _ = s.client.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 		return nil, fmt.Errorf("start sandbox container: %w", err)
 	}
-	s.remember(userID, created.ID)
-	s.log.Info("created Docker sandbox", "user_id", userID, "container_id", created.ID)
+	s.remember(key, created.ID)
+	s.log.Info("created Docker sandbox", "user_id", identity.UserID, "group_id", identity.GroupID, "tenant_id", identity.TenantID, "container_id", created.ID)
 	if err := s.writeCredentialFiles(startCtx, created.ID, credentials); err != nil {
 		_ = s.removeContainer(context.Background(), created.ID)
-		s.forget(userID, created.ID)
+		s.forget(key, created.ID)
 		return nil, err
 	}
 	return session{sandbox: s, id: created.ID}, nil
 }
 
-// Remove stops and removes the user's container. Persistent files are not
-// touched because they live outside the container layer.
-func (s *Sandbox) Remove(ctx context.Context, userID string) (bool, error) {
-	if strings.TrimSpace(userID) == "" {
+// workspaceDirs lists the homes bind-mounted into the identity's container:
+// the user's own first (the working directory), then the group's and the
+// tenant's when the identity carries them.
+func (s *Sandbox) workspaceDirs(identity golemtools.SandboxIdentity) []string {
+	dirs := []string{s.config.Workspaces.ForOwner(identity.UserID).Root()}
+	if identity.GroupID != "" {
+		dirs = append(dirs, s.config.Workspaces.ForGroup(identity.GroupID).Root())
+	}
+	if identity.TenantID != "" {
+		dirs = append(dirs, s.config.Workspaces.ForTenant(identity.TenantID).Root())
+	}
+	return dirs
+}
+
+// Remove stops and removes the identity's container. Persistent files are
+// not touched because they live outside the container layer.
+func (s *Sandbox) Remove(ctx context.Context, identity golemtools.SandboxIdentity) (bool, error) {
+	if strings.TrimSpace(identity.UserID) == "" {
 		return false, errors.New("docker sandbox: user id is required")
 	}
-	lock := s.lockFor(userID)
+	key := identity.Key()
+	lock := s.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
-	id := s.containerFor(userID)
+	id := s.containerFor(key)
 	if id == "" {
-		containers, err := s.client.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(userID))})
+		containers, err := s.client.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: client.Filters{}.Add("label", LabelSandbox+"=true", LabelOwner+"="+userKey(key))})
 		if err != nil {
 			return false, fmt.Errorf("find sandbox container: %w", err)
 		}
@@ -232,8 +258,8 @@ func (s *Sandbox) Remove(ctx context.Context, userID string) (bool, error) {
 	if err := s.removeContainer(ctx, id); err != nil {
 		return false, err
 	}
-	s.forget(userID, id)
-	s.log.Info("removed Docker sandbox", "user_id", userID, "container_id", id)
+	s.forget(key, id)
+	s.log.Info("removed Docker sandbox", "user_id", identity.UserID, "container_id", id)
 	return true, nil
 }
 

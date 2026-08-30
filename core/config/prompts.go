@@ -50,6 +50,19 @@ Do not create, reschedule or cancel a scheduled task as part of carrying this on
 # The task
 {taskText}`
 
+// DefaultSubagentPrompt is what a subagent run says to the model, as a
+// template over {taskText} — the brief the parent's model wrote. It frames
+// the brief as the whole of the task: the subagent sees nothing of the
+// conversation that started it.
+const DefaultSubagentPrompt = `Another run of this assistant handed you the task below. It is your whole task: you see nothing of the conversation it came from — not the user's message, not what that run found, not the files it has open. Everything you need is in the brief, and the brief says what to report back.
+
+You cannot ask the user anything, so assume what the brief leaves open and say in your answer what you assumed. You cannot start subagents of your own and you cannot schedule tasks. You write to the same workspace the run that started you does, so a file you leave behind is a file it can read.
+
+Work through the task, then answer with what the brief asked you to report and nothing else — your answer is the only part of your work that reaches the caller.
+
+# The brief
+{taskText}`
+
 // DefaultGuideThreshold is the tool-result size above which the large
 // response interceptor diverts the result to a file in the user's workspace.
 // 30000 characters is roughly where a tool result starts crowding the context

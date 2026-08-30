@@ -53,6 +53,14 @@ const (
 	ToolNameListScheduledTasks  = "ListScheduledTasks"
 	ToolNameCancelScheduledTask = "CancelScheduledTask"
 
+	// The subagent tools are registered by core/subagent (they need the
+	// agent itself, which this package must not import) and excluded from
+	// the SUBAGENT scenario by name, which is the depth cap: a subagent
+	// cannot start one of its own.
+	ToolNameStartSubagent  = "StartSubagent"
+	ToolNameWaitSubagent   = "WaitForSubagent"
+	ToolNameCancelSubagent = "CancelSubagent"
+
 	ToolNameToolSearch = "tool_search"
 )
 

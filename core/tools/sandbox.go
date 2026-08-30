@@ -20,12 +20,47 @@ import (
 	"github.com/ishi-o/golem/core/store"
 )
 
-// Sandbox owns one disposable command environment per user. The Docker and
-// Kubernetes modules implement this contract; core only owns the tool
+// SandboxIdentity names whose sandbox a backend manages: the user, plus
+// the group and tenant scopes the run carries. The identity — not the user
+// alone — is what a sandbox is keyed on, so two scopes never share a
+// container even for one user.
+type SandboxIdentity struct {
+	UserID   string
+	GroupID  string
+	TenantID string
+}
+
+// Key is the identity as a single string to key maps, labels and names by:
+// the user alone when the run carries no scope, the composite otherwise.
+// Components are joined with NUL, which no channel id contains.
+func (i SandboxIdentity) Key() string {
+	if i.GroupID == "" && i.TenantID == "" {
+		return i.UserID
+	}
+	return i.UserID + "\x00" + i.GroupID + "\x00" + i.TenantID
+}
+
+// Scoped reports whether the identity carries a group or tenant.
+func (i SandboxIdentity) Scoped() bool { return i.GroupID != "" || i.TenantID != "" }
+
+// identityFromContext assembles the run's sandbox identity from the context
+// the tools execute in.
+func identityFromContext(ctx context.Context) (SandboxIdentity, error) {
+	userID, err := UserID.Require(ctx)
+	if err != nil {
+		return SandboxIdentity{}, err
+	}
+	groupID, _ := GroupID.Get(ctx)
+	tenantID, _ := TenantID.Get(ctx)
+	return SandboxIdentity{UserID: userID, GroupID: groupID, TenantID: tenantID}, nil
+}
+
+// Sandbox owns one disposable command environment per identity. The Docker
+// and Kubernetes modules implement this contract; core only owns the tool
 // protocol shared by both backends.
 type Sandbox interface {
-	Ensure(ctx context.Context, userID string) (SandboxSession, error)
-	Remove(ctx context.Context, userID string) (bool, error)
+	Ensure(ctx context.Context, identity SandboxIdentity) (SandboxSession, error)
+	Remove(ctx context.Context, identity SandboxIdentity) (bool, error)
 	io.Closer
 }
 
@@ -162,7 +197,7 @@ Usage notes:
 - Chain dependent commands with &&. Use ; if earlier failures are acceptable.
 - Prefer absolute paths over cd.`,
 		func(ctx context.Context, in bashInput) (string, error) {
-			userID, err := UserID.Require(ctx)
+			identity, err := identityFromContext(ctx)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
@@ -170,7 +205,7 @@ Usage notes:
 				return "Error: command is required", nil
 			}
 			bashID := newShellID()
-			session, err := s.backend.Ensure(ctx, userID)
+			session, err := s.backend.Ensure(ctx, identity)
 			if err != nil {
 				return fmt.Sprintf("bash_id: %s\n\nError creating sandbox: %v", bashID, err), nil
 			}
@@ -210,11 +245,11 @@ func (s *sandboxTools) bashOutput() tool.InvokableTool {
 			if !isSafeShellID(in.BashID) {
 				return "Error: invalid bash_id", nil
 			}
-			userID, err := UserID.Require(ctx)
+			identity, err := identityFromContext(ctx)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			session, err := s.backend.Ensure(ctx, userID)
+			session, err := s.backend.Ensure(ctx, identity)
 			if err != nil {
 				return "Error retrieving output: " + err.Error(), nil
 			}
@@ -255,11 +290,11 @@ func (s *sandboxTools) killShell() tool.InvokableTool {
 			if !isSafeShellID(in.BashID) {
 				return "Error: invalid bash_id", nil
 			}
-			userID, err := UserID.Require(ctx)
+			identity, err := identityFromContext(ctx)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			session, err := s.backend.Ensure(ctx, userID)
+			session, err := s.backend.Ensure(ctx, identity)
 			if err != nil {
 				return "Error killing shell: " + err.Error(), nil
 			}
@@ -292,11 +327,11 @@ func (s *sandboxTools) restart() tool.InvokableTool {
 		name,
 		description,
 		func(ctx context.Context, _ struct{}) (string, error) {
-			userID, err := UserID.Require(ctx)
+			identity, err := identityFromContext(ctx)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			removed, err := s.backend.Remove(ctx, userID)
+			removed, err := s.backend.Remove(ctx, identity)
 			if err != nil {
 				return "Error restarting shell sandbox: " + err.Error(), nil
 			}
