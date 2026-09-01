@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/retriever"
@@ -17,10 +16,7 @@ import (
 )
 
 func TestKnowledgeFacadeScopesAndRetrieval(t *testing.T) {
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	base := knowledge.NewInMemory(knowledge.InMemoryOptions{
-		ChunkSize: 32, ChunkOverlap: 4, Clock: func() time.Time { return now },
-	})
+	base := newTestKnowledgeBase()
 	alice := knowledge.NewScope("alice", "team-a", "company-a")
 
 	_, err := base.Index(context.Background(), knowledge.NewTextSource(alice, knowledge.TargetOwn, "Personal", "private launch plan", "", "personal"))
@@ -92,7 +88,7 @@ func TestKnowledgePathAndTools(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/note.md"
 	require.NoError(t, os.WriteFile(path, []byte("local knowledge"), 0o644))
-	base := knowledge.NewInMemory(knowledge.InMemoryOptions{})
+	base := newTestKnowledgeBase()
 	scope := knowledge.NewScope("alice", "", "")
 	_, err := base.Index(context.Background(), knowledge.NewPathSource(scope, knowledge.TargetOwn, "Note", path, "note"))
 	require.NoError(t, err)
