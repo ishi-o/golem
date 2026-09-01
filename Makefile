@@ -1,4 +1,4 @@
-MODULES := core store/sqlx store/mongodb store/redis connector/feishu sandbox/docker sandbox/kubernetes test
+MODULES := core store/sqlx store/mongodb store/redis connector/webhook connector/email connector/github connector/gitlab connector/grafana connector/feishu sandbox/docker sandbox/kubernetes test
 
 .DEFAULT_GOAL := build
 

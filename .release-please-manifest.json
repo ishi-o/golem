@@ -5,5 +5,10 @@
   "store/redis": "0.2.1",
   "sandbox/docker": "0.2.1",
   "sandbox/kubernetes": "0.2.1",
-  "connector/feishu": "0.2.1"
+  "connector/feishu": "0.2.1",
+  "connector/email": "0.2.1",
+  "connector/webhook": "0.2.1",
+  "connector/github": "0.2.1",
+  "connector/gitlab": "0.2.1",
+  "connector/grafana": "0.2.1"
 }

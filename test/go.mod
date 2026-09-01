@@ -59,7 +59,12 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
+	github.com/ishi-o/golem/connector/email v0.2.1
 	github.com/ishi-o/golem/connector/feishu v0.2.1
+	github.com/ishi-o/golem/connector/grafana v0.2.1
+	github.com/ishi-o/golem/connector/github v0.2.1
+	github.com/ishi-o/golem/connector/gitlab v0.2.1
+	github.com/ishi-o/golem/connector/webhook v0.2.1
 	github.com/ishi-o/golem/core v0.2.1
 	github.com/ishi-o/golem/sandbox/kubernetes v0.2.1
 	github.com/ishi-o/golem/store/mongodb v0.2.1
