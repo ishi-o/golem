@@ -149,15 +149,13 @@ func (i *Intake) record(ctx context.Context, observation observing.Observation, 
 	if situation.AwaitingSince.IsZero() {
 		situation.AwaitingSince = now
 	}
-	if situation.EventCount <= i.cfg.MaxEventsPerSituation && i.cfg.MaxEvidence > 0 {
-		evidence, err := i.events.ListBySituation(ctx, situation.ID)
-		if err != nil {
+	// MaxEventsPerSituation bounds durable evidence. MaxEvidence is a prompt
+	// projection limit used by the sweeper; dropping rows here would make the
+	// evidence API and later investigations lose events merely because a model
+	// prompt was configured to be short.
+	if situation.EventCount <= i.cfg.MaxEventsPerSituation {
+		if err := i.events.Save(ctx, store.ObservedEvent{ID: observation.DeliveryID, SituationID: situation.ID, Source: observation.Source, Kind: observation.Kind, Summary: truncate(observation.Summary, 1024), PayloadJSON: truncate(observation.PayloadJSON, 131072), ObservedAt: observation.ObservedAt}); err != nil {
 			return err
-		}
-		if len(evidence) < i.cfg.MaxEvidence {
-			if err := i.events.Save(ctx, store.ObservedEvent{ID: observation.DeliveryID, SituationID: situation.ID, Source: observation.Source, Kind: observation.Kind, Summary: truncate(observation.Summary, 1024), PayloadJSON: truncate(observation.PayloadJSON, 131072), ObservedAt: observation.ObservedAt}); err != nil {
-				return err
-			}
 		}
 	}
 	situation.LastEventAt = now
