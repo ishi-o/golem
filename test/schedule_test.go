@@ -192,6 +192,40 @@ func TestScheduleRunnerExpiryCancelsAtFireTime(t *testing.T) {
 	assert.True(t, s.wasUnscheduled("late"))
 }
 
+func TestScheduleRunnerCatchesUpDueOneShotAfterRestart(t *testing.T) {
+	s := newFakeScheduler()
+	runner, backend := newRunner(t, 1, s)
+	tasks := backend.ScheduledTasks()
+	require.NoError(t, tasks.Save(context.Background(), store.ScheduledTask{
+		ID: "catch-up", UserID: "u", TaskText: "catch up", ScheduledAt: time.Now().Add(-time.Minute), Status: store.ScheduledTaskStatusActive,
+	}))
+
+	require.NoError(t, runner.Start(context.Background()))
+	waitForStatus(t, tasks, "catch-up", store.ScheduledTaskStatusCompleted)
+	task, err := tasks.Get(context.Background(), "catch-up")
+	require.NoError(t, err)
+	assert.Equal(t, 1, task.RunCount)
+	assert.False(t, s.armedAt("catch-up"), "a caught-up one-shot must not also be armed")
+}
+
+func TestScheduleRunnerHonorsRecurringRunLimit(t *testing.T) {
+	s := newFakeScheduler()
+	runner, backend := newRunner(t, 2, s)
+	tasks := backend.ScheduledTasks()
+	require.NoError(t, tasks.Save(context.Background(), store.ScheduledTask{
+		ID: "limited", UserID: "u", TaskText: "limited", CronExpression: "*/5 * * * *", MaxRuns: 2, Status: store.ScheduledTaskStatusActive,
+	}))
+	require.NoError(t, runner.Start(context.Background()))
+	s.trigger(t, "limited")
+	waitForStatus(t, tasks, "limited", store.ScheduledTaskStatusActive)
+	s.trigger(t, "limited")
+	waitForStatus(t, tasks, "limited", store.ScheduledTaskStatusCompleted)
+	task, err := tasks.Get(context.Background(), "limited")
+	require.NoError(t, err)
+	assert.Equal(t, 2, task.RunCount)
+	assert.True(t, s.wasUnscheduled("limited"))
+}
+
 func TestScheduleRunnerArmFailurePersistsNothing(t *testing.T) {
 	s := newFakeScheduler()
 	s.failExpr = "bad"
@@ -298,6 +332,40 @@ func TestScheduleToolsRefusedWithoutScheduler(t *testing.T) {
 	require.ErrorContains(t, err, "not configured")
 }
 
+func TestScheduleToolsUpdateAndSelfControl(t *testing.T) {
+	s := newFakeScheduler()
+	runner, backend := newRunner(t, 1, s)
+	tasks := backend.ScheduledTasks()
+	family := schedule.NewTools(runner, tasks)
+	ctx := tools.UserID.With(context.Background(), "owner")
+	create := findTool(t, family.List(), tools.ToolNameCreateScheduledTask)
+	id := strings.TrimPrefix(invokeTool(t, create, ctx, `{"taskText":"x","cron":"*/5 * * * *","maxRuns":3}`), "scheduled task ")
+	update := findTool(t, family.List(), tools.ToolNameUpdateScheduledTask)
+	invokeTool(t, update, ctx, fmt.Sprintf(`{"taskId":%q,"maxRuns":0,"taskText":"updated"}`, id))
+	task, err := tasks.Get(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, "updated", task.TaskText)
+	assert.Equal(t, 0, task.MaxRuns, "maxRuns=0 should restore unlimited recurring runs")
+
+	reschedule := findTool(t, family.List(), tools.ToolNameRescheduleTask)
+	_, err = reschedule.InvokableRun(tools.ScheduledTaskID.With(ctx, id), `{"scheduledAt":"2099-01-01T00:00:00Z"}`)
+	assert.Error(t, err, "a recurring task must be stopped instead of rescheduled")
+	oneShot := strings.TrimPrefix(invokeTool(t, create, ctx, `{"taskText":"one shot","scheduledAt":"2099-01-01T00:00:00Z","expiry":"never"}`), "scheduled task ")
+	inside := tools.ScheduledTaskID.With(ctx, oneShot)
+	invokeTool(t, reschedule, inside, `{"scheduledAt":"2099-01-02T00:00:00Z","taskText":"follow up"}`)
+	task, err = tasks.Get(ctx, oneShot)
+	require.NoError(t, err)
+	assert.Empty(t, task.CronExpression)
+	assert.Equal(t, "2099-01-02T00:00:00Z", task.ScheduledAt.UTC().Format(time.RFC3339))
+	assert.Equal(t, "follow up", task.TaskText)
+
+	stop := findTool(t, family.List(), tools.ToolNameStopScheduledTask)
+	invokeTool(t, stop, inside, `{}`)
+	task, err = tasks.Get(ctx, oneShot)
+	require.NoError(t, err)
+	assert.Equal(t, store.ScheduledTaskStatusCompleted, task.Status)
+}
+
 func TestScheduledScenarioExcludesScheduleTools(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Config{}
@@ -328,13 +396,17 @@ func TestScheduledScenarioExcludesScheduleTools(t *testing.T) {
 	}
 
 	firing := names(agent.ScheduledTaskScenario.Offers)
-	for _, name := range []string{tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask} {
+	for _, name := range []string{tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask, tools.ToolNameUpdateScheduledTask} {
 		assert.False(t, firing[name], "a firing must not schedule more work: %s offered", name)
 	}
+	assert.True(t, firing[tools.ToolNameStopScheduledTask], "a firing can stop itself")
+	assert.True(t, firing[tools.ToolNameRescheduleTask], "a firing can reschedule itself")
 	assert.True(t, firing[tools.ToolNameReadFile], "the file tools remain offered to a firing")
 
 	chat := names(agent.ChatScenario.Offers)
-	for _, name := range []string{tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask} {
+	for _, name := range []string{tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask, tools.ToolNameUpdateScheduledTask} {
 		assert.True(t, chat[name], "a chat run offers %s", name)
 	}
+	assert.False(t, chat[tools.ToolNameStopScheduledTask])
+	assert.False(t, chat[tools.ToolNameRescheduleTask])
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/ishi-o/golem/core/chatmemory"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/i18n"
+	"github.com/ishi-o/golem/core/knowledge"
 	"github.com/ishi-o/golem/core/prompt"
 	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
@@ -45,6 +46,10 @@ type Agent struct {
 	// modelName names the model in OnModel/OnUsage callbacks when the stream
 	// does not carry one.
 	modelName string
+	// knowledge is optional. It is a facade over Eino-native retrievers and is
+	// consulted before each ordinary model call's user message is built.
+	knowledge       knowledge.KnowledgeBase
+	knowledgeConfig knowledge.RetrievalConfig
 	// defaultListeners observe every run, however it was started — how a
 	// surface takes part in runs it did not initiate (a scheduled task
 	// firing, say).
@@ -111,6 +116,16 @@ func WithMemoryWindow(window int) AgentOption {
 // does not include one.
 func WithModelName(name string) AgentOption {
 	return func(a *Agent) { a.modelName = name }
+}
+
+// WithKnowledgeBase attaches an optional scoped knowledge base. Retrieval is
+// best-effort: a vector-store outage is logged and the conversation still has
+// a chance to answer from its normal context.
+func WithKnowledgeBase(base knowledge.KnowledgeBase, cfg knowledge.RetrievalConfig) AgentOption {
+	return func(a *Agent) {
+		a.knowledge = base
+		a.knowledgeConfig = cfg
+	}
 }
 
 // WithDefaultListener adds a listener that observes every run.
@@ -741,6 +756,48 @@ func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Comp
 		return nil, fmt.Errorf("rendering system prompt: %w", err)
 	}
 	messages := []*schema.Message{{Role: schema.System, Content: system}}
+	if a.knowledge != nil {
+		retrieval := knowledge.KnowledgeRetrieval{Scope: knowledge.NewScope(req.UserID, req.GroupID, req.TenantID), Query: req.Text, TopK: a.knowledgeConfig.TopK}
+		if req.KnowledgeRetrieval != nil {
+			retrieval = *req.KnowledgeRetrieval
+			if strings.TrimSpace(retrieval.Query) == "" {
+				retrieval.Query = req.Text
+			}
+		}
+		topK := retrieval.TopK
+		if topK <= 0 {
+			topK = a.knowledgeConfig.TopK
+		}
+		if topK <= 0 {
+			topK = 4
+		}
+		if strings.TrimSpace(retrieval.Query) != "" {
+			var documents []*schema.Document
+			var searchErr error
+			filteredSearch, supportsFiltering := a.knowledge.(knowledge.FilteredKnowledgeBase)
+			if retrieval.Filter != nil && supportsFiltering {
+				documents, searchErr = filteredSearch.SearchFiltered(ctx, retrieval.Scope, retrieval.Query, topK, retrieval.Filter)
+			} else {
+				documents, searchErr = a.knowledge.Search(ctx, retrieval.Scope, retrieval.Query, topK)
+			}
+			if searchErr != nil {
+				a.log.Warn("knowledge retrieval failed; continuing without it", "err", searchErr)
+			} else {
+				if retrieval.Filter != nil {
+					filtered := documents[:0]
+					for _, document := range documents {
+						if document != nil && retrieval.Filter(knowledge.ReadMetadata(document.MetaData)) {
+							filtered = append(filtered, document)
+						}
+					}
+					documents = filtered
+				}
+				if len(documents) > 0 {
+					messages = append(messages, &schema.Message{Role: schema.System, Content: knowledge.ContextText(documents, a.knowledgeConfig.MaxChars)})
+				}
+			}
+		}
+	}
 	if a.memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
 		history, err := a.memory.Load(ctx, req.ConversationID, a.memoryWindow)
 		if err != nil {

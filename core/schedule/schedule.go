@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -25,6 +26,8 @@ type Config struct {
 	// DefaultExpiry bounds a task's life when it names none; 0 means 7
 	// days, "never" being an explicit choice the tool's caller makes.
 	DefaultExpiry time.Duration
+	// Clock supplies wall time for expiry and catch-up decisions.
+	Clock func() time.Time
 }
 
 // Runner loads the ACTIVE tasks at startup, arms them on the scheduler, and
@@ -37,9 +40,10 @@ type Runner struct {
 	cfg   Config
 	log   *slog.Logger
 
-	mu    sync.Mutex
-	armed map[string]bool
-	stop  bool
+	mu      sync.Mutex
+	armed   map[string]bool
+	running map[string]bool
+	stop    bool
 }
 
 // New constructs the runner and validates the prompt template. Call Start
@@ -48,13 +52,19 @@ func New(tasks store.ScheduledTaskStore, a *agent.Agent, cfg Config, log *slog.L
 	if cfg.DefaultExpiry <= 0 {
 		cfg.DefaultExpiry = 7 * 24 * time.Hour
 	}
+	if cfg.Clock == nil {
+		cfg.Clock = time.Now
+	}
 	if _, err := prompt.Render(cfg.Prompt, map[string]string{"taskText": ""}); err != nil {
 		return nil, fmt.Errorf("golem/schedule: prompt template: %w", err)
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Runner{tasks: tasks, agent: a, cfg: cfg, log: log, armed: map[string]bool{}}, nil
+	if tasks == nil {
+		return nil, fmt.Errorf("golem/schedule: nil task store")
+	}
+	return &Runner{tasks: tasks, agent: a, cfg: cfg, log: log, armed: map[string]bool{}, running: map[string]bool{}}, nil
 }
 
 // Start loads ACTIVE tasks and arms them. A task whose expiry already passed
@@ -65,16 +75,32 @@ func (r *Runner) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := r.cfg.Clock()
+	var failures []error
 	for _, task := range active {
-		if !task.ExpiresAt.IsZero() && !task.ExpiresAt.After(time.Now()) {
+		if !task.ExpiresAt.IsZero() && !task.ExpiresAt.After(now) {
 			if err := r.tasks.SetStatus(ctx, task.ID, store.ScheduledTaskStatusCancelled); err != nil {
 				r.log.Warn("expiring stale task failed", "task", task.ID, "err", err)
+				failures = append(failures, fmt.Errorf("expire task %s: %w", task.ID, err))
 			}
 			continue
 		}
-		r.arm(task)
+		fireAt := task.NextFireAt
+		if fireAt.IsZero() {
+			fireAt = task.ScheduledAt
+		}
+		if task.CronExpression == "" && !fireAt.IsZero() && !fireAt.After(now) {
+			// A one-shot that became due while the process was down is
+			// catch-up work. It is intentionally not armed as well, which
+			// prevents a scheduler from delivering it twice.
+			go r.fire(task)
+			continue
+		}
+		if err := r.arm(task); err != nil {
+			failures = append(failures, fmt.Errorf("arm task %s: %w", task.ID, err))
+		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // Stop disarms every task; in-flight firings are the agent's Shutdown's to
@@ -84,7 +110,9 @@ func (r *Runner) Stop() {
 	defer r.mu.Unlock()
 	r.stop = true
 	for id := range r.armed {
-		r.cfg.Scheduler.Unschedule(id)
+		if r.cfg.Scheduler != nil {
+			r.cfg.Scheduler.Unschedule(id)
+		}
 		delete(r.armed, id)
 	}
 }
@@ -99,6 +127,9 @@ func (r *Runner) Schedule(task store.ScheduledTask) error {
 	if task.ID == "" {
 		return fmt.Errorf("task has no id")
 	}
+	if task.CronExpression == "" && task.NextFireAt.IsZero() {
+		task.NextFireAt = task.ScheduledAt
+	}
 	if err := r.arm(task); err != nil {
 		return err
 	}
@@ -109,22 +140,102 @@ func (r *Runner) Schedule(task store.ScheduledTask) error {
 	return nil
 }
 
+// Update replaces a task's scheduling definition while retaining its id and
+// run count. The new definition is armed before it is persisted; a rejected
+// schedule therefore does not leave a row claiming it is active.
+func (r *Runner) Update(ctx context.Context, task store.ScheduledTask) error {
+	if task.ID == "" {
+		return fmt.Errorf("task has no id")
+	}
+	old, err := r.tasks.Get(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if old == nil {
+		return fmt.Errorf("scheduled task %q was not found", task.ID)
+	}
+	if task.UserID == "" {
+		task.UserID = old.UserID
+	}
+	if task.RunCount == 0 {
+		task.RunCount = old.RunCount
+	}
+	if task.ConversationID == "" {
+		task.ConversationID = old.ConversationID
+	}
+	if task.ChatID == "" {
+		task.ChatID = old.ChatID
+	}
+	if task.ChatType == "" {
+		task.ChatType = old.ChatType
+	}
+	if task.RootMessageID == "" {
+		task.RootMessageID = old.RootMessageID
+	}
+	if task.GroupID == "" {
+		task.GroupID = old.GroupID
+	}
+	if task.TenantID == "" {
+		task.TenantID = old.TenantID
+	}
+	r.disarm(task.ID)
+	if task.Status == "" {
+		task.Status = store.ScheduledTaskStatusActive
+	}
+	if task.Status == store.ScheduledTaskStatusActive {
+		if err := r.arm(task); err != nil {
+			_ = r.arm(*old)
+			return err
+		}
+	}
+	if err := r.tasks.Save(ctx, task); err != nil {
+		r.disarm(task.ID)
+		if old.Status == store.ScheduledTaskStatusActive {
+			_ = r.arm(*old)
+		}
+		return err
+	}
+	return nil
+}
+
 // Unschedule removes a task's job and stops its firing run. requestId
 // equals the task id, so a firing in flight is abortable by the same call.
 func (r *Runner) Unschedule(taskID string) {
+	r.disarm(taskID)
+	if r.agent != nil {
+		r.agent.Cancel(taskID)
+	}
+}
+
+// StopFiringTask completes the task whose current firing called for it. It
+// deliberately does not cancel the agent run: the run must be able to finish
+// the answer that explains why the recurring task stopped.
+func (r *Runner) StopFiringTask(ctx context.Context, taskID string) error {
+	if err := r.tasks.SetStatus(ctx, taskID, store.ScheduledTaskStatusCompleted); err != nil {
+		return err
+	}
+	r.disarm(taskID)
+	return nil
+}
+
+func (r *Runner) disarm(taskID string) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.armed[taskID] {
-		r.cfg.Scheduler.Unschedule(taskID)
+		if r.cfg.Scheduler != nil {
+			r.cfg.Scheduler.Unschedule(taskID)
+		}
 		delete(r.armed, taskID)
 	}
-	r.mu.Unlock()
-	r.agent.Cancel(taskID)
 }
 
 // arm hands one task to the scheduler. The cron expression was normalized
 // and validated at creation; one that the scheduler now rejects is a corrupt
 // row, reported loudly rather than silently never firing.
 func (r *Runner) arm(task store.ScheduledTask) error {
+	if err := validateSchedule(task); err != nil {
+		return err
+	}
 	if r.cfg.Scheduler == nil {
 		r.log.Error("no scheduler configured; task will not fire", "task", task.ID)
 		return fmt.Errorf("no scheduler configured")
@@ -141,7 +252,11 @@ func (r *Runner) arm(task store.ScheduledTask) error {
 			return err
 		}
 	} else {
-		r.cfg.Scheduler.ScheduleAt(task.ID, task.ScheduledAt, run)
+		at := task.NextFireAt
+		if at.IsZero() {
+			at = task.ScheduledAt
+		}
+		r.cfg.Scheduler.ScheduleAt(task.ID, at, run)
 	}
 	r.armed[task.ID] = true
 	return nil
@@ -151,12 +266,49 @@ func (r *Runner) arm(task store.ScheduledTask) error {
 // conversation so it reads earlier firings and the user's messages.
 func (r *Runner) fire(task store.ScheduledTask) {
 	ctx := context.Background()
-	if !r.agent.Accepting() {
+	r.mu.Lock()
+	if r.running[task.ID] {
+		r.mu.Unlock()
 		return
 	}
-	if !task.ExpiresAt.IsZero() && !task.ExpiresAt.After(time.Now()) {
+	r.running[task.ID] = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.running, task.ID)
+		r.mu.Unlock()
+	}()
+	stored, err := r.tasks.Get(ctx, task.ID)
+	if err != nil {
+		r.log.Error("loading scheduled task before firing failed", "task", task.ID, "err", err)
+		return
+	}
+	if stored == nil {
+		return
+	}
+	task = *stored
+	if task.Status != store.ScheduledTaskStatusActive {
+		return
+	}
+	if r.agent == nil || !r.agent.Accepting() {
+		if r.agent == nil {
+			_ = r.tasks.SetStatus(ctx, task.ID, store.ScheduledTaskStatusFailed)
+		}
+		return
+	}
+	if !task.ExpiresAt.IsZero() && !task.ExpiresAt.After(r.cfg.Clock()) {
 		r.Unschedule(task.ID)
 		_ = r.tasks.SetStatus(ctx, task.ID, store.ScheduledTaskStatusCancelled)
+		return
+	}
+	if task.MaxRuns > 0 && task.RunCount >= task.MaxRuns {
+		r.Unschedule(task.ID)
+		_ = r.tasks.SetStatus(ctx, task.ID, store.ScheduledTaskStatusCompleted)
+		return
+	}
+	task.RunCount++
+	if err := r.tasks.Save(ctx, task); err != nil {
+		r.log.Error("recording scheduled task run failed", "task", task.ID, "err", err)
 		return
 	}
 	text, err := prompt.Render(r.cfg.Prompt, map[string]string{"taskText": task.TaskText})
@@ -167,16 +319,41 @@ func (r *Runner) fire(task store.ScheduledTask) {
 		r.log.Warn("scheduled task prompt render failed; using raw task text", "task", task.ID, "err", err)
 		text = task.TaskText
 	}
+	conversationID := task.ConversationID
+	if conversationID == "" {
+		conversationID = task.RootMessageID
+	}
+	if conversationID == "" {
+		conversationID = task.ChatID
+	}
+	rootMessageID := task.RootMessageID
+	if rootMessageID == "" {
+		rootMessageID = task.ChatID
+	}
 	err = r.agent.Fire(agent.NewRequest(agent.ScheduledTaskScenario, text,
 		agent.WithRequestID(task.ID),
 		agent.WithIdentity(task.UserID, task.ChatID, task.ChatType),
-		agent.WithConversation(task.RootMessageID, task.RootMessageID, task.RootMessageID),
+		agent.WithScope(task.GroupID, task.TenantID),
+		agent.WithConversation(conversationID, rootMessageID, rootMessageID),
 		agent.WithBackground(task.Background),
+		agent.WithScheduledTaskID(task.ID),
 		agent.WithListener(agent.ListenerFuncs{OnFinishedFunc: func(outcome agent.Outcome) {
+			current, getErr := r.tasks.Get(ctx, task.ID)
+			if getErr != nil || current == nil || current.Status != store.ScheduledTaskStatusActive {
+				return
+			}
+			// A self-reschedule or an external update owns the next lifecycle;
+			// this firing must not complete the replacement definition.
+			if current.RunCount != task.RunCount || current.CronExpression != task.CronExpression || !current.ScheduledAt.Equal(task.ScheduledAt) || current.MaxRuns != task.MaxRuns {
+				return
+			}
 			// A cron task stays ACTIVE whatever one firing did; a one-shot
 			// is done after one.
-			if task.CronExpression != "" {
+			if task.CronExpression != "" && (task.MaxRuns <= 0 || task.RunCount < task.MaxRuns) {
 				return
+			}
+			if task.CronExpression != "" && task.MaxRuns > 0 && task.RunCount >= task.MaxRuns {
+				r.Unschedule(task.ID)
 			}
 			switch outcome {
 			case agent.OutcomeCompleted:
@@ -191,6 +368,22 @@ func (r *Runner) fire(task store.ScheduledTask) {
 	if err != nil {
 		r.log.Error("firing scheduled task failed", "task", task.ID, "err", err)
 	}
+}
+
+func validateSchedule(task store.ScheduledTask) error {
+	if task.ID == "" {
+		return fmt.Errorf("task has no id")
+	}
+	if task.CronExpression != "" && !task.ScheduledAt.IsZero() {
+		return fmt.Errorf("cron and scheduledAt are mutually exclusive")
+	}
+	if task.CronExpression == "" && task.ScheduledAt.IsZero() && task.NextFireAt.IsZero() {
+		return fmt.Errorf("scheduledAt is required for a one-shot task")
+	}
+	if task.MaxRuns < 0 || task.RunCount < 0 {
+		return fmt.Errorf("task run limits cannot be negative")
+	}
+	return nil
 }
 
 // newTaskID mints an unguessable task id.

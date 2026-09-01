@@ -94,6 +94,8 @@ var (
 	RootMessageID = NewKey[string]("rootMessageId")
 	// ReplyMessageID is the message this run's reply will answer.
 	ReplyMessageID = NewKey[string]("replyMessageId")
+	// ConversationID is the memory conversation the run belongs to.
+	ConversationID = NewKey[string]("conversationId")
 	// RequestID is the id of the run the tool is executing in — what Cancel
 	// stops, and what ties a subagent to the run that started it.
 	RequestID = NewKey[string]("requestId")
@@ -102,4 +104,10 @@ var (
 	GroupID = NewKey[string]("groupId")
 	// TenantID is the tenant scope of the run, empty when there is none.
 	TenantID = NewKey[string]("tenantId")
+	// SituationID identifies the external-event situation being triaged. It is
+	// empty for ordinary conversations and lets optional situation tools update
+	// only the durable record they were given.
+	SituationID = NewKey[string]("situationId")
+	// ScheduledTaskID identifies the task whose firing is currently running.
+	ScheduledTaskID = NewKey[string]("scheduledTaskId")
 )

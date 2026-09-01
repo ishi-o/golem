@@ -35,13 +35,16 @@ func NewMemoryTools(home storage.Home) (*MemoryTools, error) {
 
 // List lists the memory tools, satisfying Builtin.
 func (m *MemoryTools) List() []tool.InvokableTool {
-	return []tool.InvokableTool{m.Read(), m.Write()}
+	return []tool.InvokableTool{m.Read(), m.Write(), m.Create(), m.Insert(), m.Replace(), m.Rename(), m.Delete()}
 }
 
 // resolve keeps memory paths inside the memories folder; the folder name is
 // a suggestion ("MEMORY.md"), not a rule, and an agent may keep several
 // notes.
 func (m *MemoryTools) resolve(name string) (string, error) {
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("memory file %q is outside the memories folder", name)
+	}
 	clean := filepath.Clean(filepath.FromSlash(name))
 	if strings.HasPrefix(clean, "..") {
 		return "", fmt.Errorf("memory file %q is outside the memories folder", name)
@@ -102,6 +105,192 @@ func (m *MemoryTools) Write() tool.InvokableTool {
 			}
 			return "wrote " + name, nil
 		}))
+}
+
+// Create makes a new memory file and refuses to overwrite an existing note.
+func (m *MemoryTools) Create() tool.InvokableTool {
+	return MustTool(utils.InferTool(ToolNameCreateMemory,
+		"Create a new memory file. Use MemoryWrite to replace an existing file deliberately.",
+		func(ctx context.Context, in struct {
+			File    string `json:"file"`
+			Content string `json:"content"`
+		}) (string, error) {
+			path, err := m.resolve(in.File)
+			if err != nil {
+				return "", err
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return "", err
+			}
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+			if err != nil {
+				return "", err
+			}
+			_, writeErr := file.WriteString(in.Content)
+			closeErr := file.Close()
+			if writeErr != nil {
+				return "", writeErr
+			}
+			if closeErr != nil {
+				return "", closeErr
+			}
+			return "created " + in.File, nil
+		}))
+}
+
+// Insert inserts text at a rune position, or appends when Position is -1.
+// Rune positions keep the operation safe for UTF-8 notes.
+func (m *MemoryTools) Insert() tool.InvokableTool {
+	return MustTool(utils.InferTool(ToolNameInsertMemory,
+		"Insert text into a memory file without rewriting unrelated content. Position is a zero-based rune offset; use -1 to append.",
+		func(ctx context.Context, in struct {
+			File     string `json:"file"`
+			Content  string `json:"content"`
+			Position int    `json:"position"`
+		}) (string, error) {
+			path, err := m.resolve(in.File)
+			if err != nil {
+				return "", err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", err
+			}
+			runes := []rune(string(data))
+			position := in.Position
+			if position < 0 || position > len(runes) {
+				position = len(runes)
+			}
+			runes = append(runes[:position], append([]rune(in.Content), runes[position:]...)...)
+			if err := writeMemoryFile(path, []byte(string(runes))); err != nil {
+				return "", err
+			}
+			return "updated " + in.File, nil
+		}))
+}
+
+// Replace performs a literal, single-pass string replacement in a memory
+// file. The old text must occur so a misspelled edit is not reported as done.
+func (m *MemoryTools) Replace() tool.InvokableTool {
+	return MustTool(utils.InferTool(ToolNameReplaceMemory,
+		"Replace one literal string in a memory file. The old text must exist exactly once unless all occurrences are intentionally requested.",
+		func(ctx context.Context, in struct {
+			File string `json:"file"`
+			Old  string `json:"old"`
+			New  string `json:"new"`
+			All  bool   `json:"all,omitempty"`
+		}) (string, error) {
+			if in.Old == "" {
+				return "", fmt.Errorf("old text is required")
+			}
+			path, err := m.resolve(in.File)
+			if err != nil {
+				return "", err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", err
+			}
+			content := string(data)
+			count := strings.Count(content, in.Old)
+			if count == 0 {
+				return "", fmt.Errorf("old text was not found")
+			}
+			if count > 1 && !in.All {
+				return "", fmt.Errorf("old text occurs %d times; set all=true or make it unique", count)
+			}
+			if in.All {
+				content = strings.ReplaceAll(content, in.Old, in.New)
+			} else {
+				content = strings.Replace(content, in.Old, in.New, 1)
+			}
+			if err := writeMemoryFile(path, []byte(content)); err != nil {
+				return "", err
+			}
+			return "updated " + in.File, nil
+		}))
+}
+
+// Rename moves a memory file without allowing an existing target to be
+// overwritten accidentally.
+func (m *MemoryTools) Rename() tool.InvokableTool {
+	return MustTool(utils.InferTool(ToolNameRenameMemory,
+		"Rename a memory file inside the memories folder.",
+		func(ctx context.Context, in struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}) (string, error) {
+			from, err := m.resolve(in.From)
+			if err != nil {
+				return "", err
+			}
+			to, err := m.resolve(in.To)
+			if err != nil {
+				return "", err
+			}
+			if _, err := os.Stat(to); err == nil {
+				return "", fmt.Errorf("memory file %q already exists", in.To)
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
+			if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+				return "", err
+			}
+			if err := os.Rename(from, to); err != nil {
+				return "", err
+			}
+			return "renamed " + in.From + " to " + in.To, nil
+		}))
+}
+
+// Delete removes one memory file, never a directory tree.
+func (m *MemoryTools) Delete() tool.InvokableTool {
+	return MustTool(utils.InferTool(ToolNameDeleteMemory,
+		"Delete one memory file. This cannot be undone.",
+		func(ctx context.Context, in struct {
+			File string `json:"file"`
+		}) (string, error) {
+			path, err := m.resolve(in.File)
+			if err != nil {
+				return "", err
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return "", err
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("memory path %q is a directory", in.File)
+			}
+			if err := os.Remove(path); err != nil {
+				return "", err
+			}
+			return "deleted " + in.File, nil
+		}))
+}
+
+func writeMemoryFile(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".golem-memory-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 // SkillTools are the user's skill files: directories under skills/, each

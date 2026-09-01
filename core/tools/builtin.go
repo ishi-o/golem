@@ -21,8 +21,13 @@ const (
 	ToolNameListFiles = "ListFiles"
 	ToolNameGrepFiles = "GrepFiles"
 
-	ToolNameReadMemory  = "MemoryView"
-	ToolNameWriteMemory = "MemoryWrite"
+	ToolNameReadMemory    = "MemoryView"
+	ToolNameWriteMemory   = "MemoryWrite"
+	ToolNameCreateMemory  = "MemoryCreate"
+	ToolNameInsertMemory  = "MemoryInsert"
+	ToolNameReplaceMemory = "MemoryStrReplace"
+	ToolNameRenameMemory  = "MemoryRename"
+	ToolNameDeleteMemory  = "MemoryDelete"
 
 	ToolNameListSkills    = "ListSkills"
 	ToolNameReadSkillFile = "ReadSkillFile"
@@ -52,6 +57,12 @@ const (
 	ToolNameCreateScheduledTask = "CreateScheduledTask"
 	ToolNameListScheduledTasks  = "ListScheduledTasks"
 	ToolNameCancelScheduledTask = "CancelScheduledTask"
+	ToolNameUpdateScheduledTask = "UpdateScheduledTask"
+	ToolNameStopScheduledTask   = "StopThisScheduledTask"
+	ToolNameRescheduleTask      = "RescheduleThisScheduledTask"
+
+	ToolNameListPlaybooks = "ListPlaybooks"
+	ToolNameWritePlaybook = "WritePlaybook"
 
 	// The subagent tools are registered by core/subagent (they need the
 	// agent itself, which this package must not import) and excluded from

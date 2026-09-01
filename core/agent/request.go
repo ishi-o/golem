@@ -5,6 +5,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/ishi-o/golem/core/knowledge"
 	"github.com/ishi-o/golem/core/tools"
 )
 
@@ -35,6 +36,11 @@ type Request struct {
 	// scope. Empty means no scope.
 	GroupID  string
 	TenantID string
+	// SituationID is set by optional external-event triage runs. It is carried
+	// to situation management tools and otherwise has no runtime meaning.
+	SituationID string
+	// ScheduledTaskID identifies the task whose firing is executing.
+	ScheduledTaskID string
 	// ConversationID groups the runs that share chat memory.
 	ConversationID string
 	RootMessageID  string
@@ -52,6 +58,10 @@ type Request struct {
 
 	// Text is the user message passed to the model.
 	Text string
+	// KnowledgeRetrieval is an explicit, fixed-scope lookup for unattended
+	// runs. When nil, an attached knowledge base derives scope from identity and
+	// retrieves using Text.
+	KnowledgeRetrieval *knowledge.KnowledgeRetrieval
 }
 
 // RequestOption mutates a Request during NewRequest.
@@ -99,6 +109,19 @@ func WithScope(groupID, tenantID string) RequestOption {
 	return func(r *Request) {
 		r.GroupID, r.TenantID = groupID, tenantID
 	}
+}
+
+// WithSituationID binds optional event-management tools to one situation.
+func WithSituationID(id string) RequestOption { return func(r *Request) { r.SituationID = id } }
+
+// WithScheduledTaskID binds optional task self-control tools to a firing.
+func WithScheduledTaskID(id string) RequestOption { return func(r *Request) { r.ScheduledTaskID = id } }
+
+// WithKnowledgeRetrieval sets a fixed-scope retrieval request. The scope is
+// not derived from the incoming message, which is important for event bodies
+// and other untrusted briefings.
+func WithKnowledgeRetrieval(retrieval knowledge.KnowledgeRetrieval) RequestOption {
+	return func(r *Request) { r.KnowledgeRetrieval = &retrieval }
 }
 
 // WithConversation places the run in a conversation (chat memory) and
@@ -184,8 +207,11 @@ func (r Request) context(ctx context.Context, mutators []func(context.Context) c
 	ctx = tools.ChatType.With(ctx, r.ChatType)
 	ctx = tools.RootMessageID.With(ctx, r.RootMessageID)
 	ctx = tools.ReplyMessageID.With(ctx, r.ReplyMessageID)
+	ctx = tools.ConversationID.With(ctx, r.ConversationID)
 	ctx = tools.RequestID.With(ctx, r.RequestID)
 	ctx = tools.GroupID.With(ctx, r.GroupID)
 	ctx = tools.TenantID.With(ctx, r.TenantID)
+	ctx = tools.SituationID.With(ctx, r.SituationID)
+	ctx = tools.ScheduledTaskID.With(ctx, r.ScheduledTaskID)
 	return ctx
 }
