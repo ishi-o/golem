@@ -271,10 +271,16 @@ type taskRow struct {
 	ChatID         sql.NullString `db:"chat_id"`
 	ChatType       sql.NullString `db:"chat_type"`
 	RootMessageID  sql.NullString `db:"root_message_id"`
+	ConversationID sql.NullString `db:"conversation_id"`
+	GroupID        sql.NullString `db:"group_id"`
+	TenantID       sql.NullString `db:"tenant_id"`
 	TaskText       sql.NullString `db:"task_text"`
 	CronExpression sql.NullString `db:"cron_expression"`
 	ScheduledAt    sql.NullString `db:"scheduled_at"`
 	ExpiresAt      sql.NullString `db:"expires_at"`
+	NextFireAt     sql.NullString `db:"next_fire_at"`
+	MaxRuns        sql.NullInt64  `db:"max_runs"`
+	RunCount       sql.NullInt64  `db:"run_count"`
 	Background     int            `db:"background"`
 	Status         string         `db:"status"`
 }
@@ -282,14 +288,15 @@ type taskRow struct {
 func (s *Store) ScheduledTasks() store.ScheduledTaskStore { return taskStore{s} }
 
 func (s *Store) saveScheduledTask(ctx context.Context, task store.ScheduledTask) error {
-	query := s.upsert(s.table("scheduled_tasks"), []string{"id", "user_id", "chat_id", "chat_type", "root_message_id", "task_text", "cron_expression", "scheduled_at", "expires_at", "background", "status"}, []string{"id", "user_id", "chat_id", "chat_type", "root_message_id", "task_text", "cron_expression", "scheduled_at", "expires_at", "background", "status"})
-	_, err := s.db.ExecContext(ctx, s.rebind(query), task.ID, task.UserID, task.ChatID, task.ChatType, task.RootMessageID, task.TaskText, task.CronExpression, timeValue(task.ScheduledAt), timeValue(task.ExpiresAt), boolInt(task.Background), string(task.Status))
+	columns := []string{"id", "user_id", "chat_id", "chat_type", "root_message_id", "conversation_id", "group_id", "tenant_id", "task_text", "cron_expression", "scheduled_at", "expires_at", "next_fire_at", "max_runs", "run_count", "background", "status"}
+	query := s.upsert(s.table("scheduled_tasks"), columns, columns)
+	_, err := s.db.ExecContext(ctx, s.rebind(query), task.ID, task.UserID, task.ChatID, task.ChatType, task.RootMessageID, task.ConversationID, task.GroupID, task.TenantID, task.TaskText, task.CronExpression, timeValue(task.ScheduledAt), timeValue(task.ExpiresAt), timeValue(task.NextFireAt), task.MaxRuns, task.RunCount, boolInt(task.Background), string(task.Status))
 	return wrap("save scheduled task", err)
 }
 
 func (s *Store) findScheduledTask(ctx context.Context, id string) (*store.ScheduledTask, error) {
 	var row taskRow
-	query := fmt.Sprintf(`SELECT id, user_id, chat_id, chat_type, root_message_id, task_text, cron_expression, scheduled_at, expires_at, background, status FROM %s WHERE id = ?`, s.table("scheduled_tasks"))
+	query := fmt.Sprintf(`SELECT id, user_id, chat_id, chat_type, root_message_id, conversation_id, group_id, tenant_id, task_text, cron_expression, scheduled_at, expires_at, next_fire_at, max_runs, run_count, background, status FROM %s WHERE id = ?`, s.table("scheduled_tasks"))
 	if err := s.db.GetContext(ctx, &row, s.rebind(query), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -313,7 +320,7 @@ func (s *Store) listTasksByUserAndStatus(ctx context.Context, userID string, sta
 
 func (s *Store) findTasks(ctx context.Context, where string, args ...any) ([]store.ScheduledTask, error) {
 	var rows []taskRow
-	query := fmt.Sprintf(`SELECT id, user_id, chat_id, chat_type, root_message_id, task_text, cron_expression, scheduled_at, expires_at, background, status FROM %s WHERE %s ORDER BY id`, s.table("scheduled_tasks"), where)
+	query := fmt.Sprintf(`SELECT id, user_id, chat_id, chat_type, root_message_id, conversation_id, group_id, tenant_id, task_text, cron_expression, scheduled_at, expires_at, next_fire_at, max_runs, run_count, background, status FROM %s WHERE %s ORDER BY id`, s.table("scheduled_tasks"), where)
 	if err := s.db.SelectContext(ctx, &rows, s.rebind(query), args...); err != nil {
 		return nil, wrap("find scheduled tasks", err)
 	}
@@ -343,7 +350,11 @@ func taskFromRow(row taskRow) (store.ScheduledTask, error) {
 	if err != nil {
 		return store.ScheduledTask{}, fmt.Errorf("decode scheduled task expiry: %w", err)
 	}
-	return store.ScheduledTask{ID: row.ID, UserID: row.UserID.String, ChatID: row.ChatID.String, ChatType: row.ChatType.String, RootMessageID: row.RootMessageID.String, TaskText: row.TaskText.String, CronExpression: row.CronExpression.String, ScheduledAt: scheduledAt, ExpiresAt: expiresAt, Background: row.Background != 0, Status: store.ScheduledTaskStatus(row.Status)}, nil
+	nextFireAt, err := parseTime(row.NextFireAt)
+	if err != nil {
+		return store.ScheduledTask{}, fmt.Errorf("decode scheduled task next fire time: %w", err)
+	}
+	return store.ScheduledTask{ID: row.ID, UserID: row.UserID.String, ChatID: row.ChatID.String, ChatType: row.ChatType.String, RootMessageID: row.RootMessageID.String, ConversationID: row.ConversationID.String, GroupID: row.GroupID.String, TenantID: row.TenantID.String, TaskText: row.TaskText.String, CronExpression: row.CronExpression.String, ScheduledAt: scheduledAt, ExpiresAt: expiresAt, NextFireAt: nextFireAt, MaxRuns: int(row.MaxRuns.Int64), RunCount: int(row.RunCount.Int64), Background: row.Background != 0, Status: store.ScheduledTaskStatus(row.Status)}, nil
 }
 
 type credentialRow struct {
@@ -420,4 +431,141 @@ func (s *Store) release(ctx context.Context, id string) error {
 	query := fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, s.table("processed_messages"))
 	_, err := s.db.ExecContext(ctx, s.rebind(query), id)
 	return wrap("release processed message", err)
+}
+
+type observedEventRow struct {
+	ID          string         `db:"id"`
+	SituationID string         `db:"situation_id"`
+	Source      sql.NullString `db:"source"`
+	Kind        sql.NullString `db:"kind"`
+	Summary     sql.NullString `db:"summary"`
+	PayloadJSON sql.NullString `db:"payload_json"`
+	ObservedAt  sql.NullString `db:"observed_at"`
+}
+
+func (s *Store) ObservedEvents() store.ObservedEventStore { return observedEventStore{s} }
+
+func (s *Store) saveObservedEvent(ctx context.Context, event store.ObservedEvent) error {
+	query := s.upsert(s.table("observed_events"),
+		[]string{"id", "situation_id", "source", "kind", "summary", "payload_json", "observed_at"},
+		[]string{"id", "situation_id", "source", "kind", "summary", "payload_json", "observed_at"})
+	_, err := s.db.ExecContext(ctx, s.rebind(query), event.ID, event.SituationID, event.Source, event.Kind, event.Summary, event.PayloadJSON, timeValue(event.ObservedAt))
+	return wrap("save observed event", err)
+}
+
+func (s *Store) listObservedEvents(ctx context.Context, situationID string) ([]store.ObservedEvent, error) {
+	var rows []observedEventRow
+	query := fmt.Sprintf(`SELECT id, situation_id, source, kind, summary, payload_json, observed_at FROM %s WHERE situation_id = ? ORDER BY id`, s.table("observed_events"))
+	if err := s.db.SelectContext(ctx, &rows, s.rebind(query), situationID); err != nil {
+		return nil, wrap("list observed events", err)
+	}
+	out := make([]store.ObservedEvent, 0, len(rows))
+	for _, row := range rows {
+		observedAt, err := parseTime(row.ObservedAt)
+		if err != nil {
+			return nil, fmt.Errorf("decode observed event time: %w", err)
+		}
+		out = append(out, store.ObservedEvent{ID: row.ID, SituationID: row.SituationID, Source: row.Source.String, Kind: row.Kind.String, Summary: row.Summary.String, PayloadJSON: row.PayloadJSON.String, ObservedAt: observedAt})
+	}
+	return out, nil
+}
+
+type situationRow struct {
+	ID              string          `db:"id"`
+	Source          sql.NullString  `db:"source"`
+	CorrelationKey  sql.NullString  `db:"correlation_key"`
+	Title           sql.NullString  `db:"title"`
+	Status          string          `db:"status"`
+	Phase           string          `db:"phase"`
+	EvaluateAfter   sql.NullString  `db:"evaluate_after"`
+	FirstSeenAt     sql.NullString  `db:"first_seen_at"`
+	AwaitingSince   sql.NullString  `db:"awaiting_since"`
+	LastEventAt     sql.NullString  `db:"last_event_at"`
+	LastEvaluatedAt sql.NullString  `db:"last_evaluated_at"`
+	ResolvedAt      sql.NullString  `db:"resolved_at"`
+	Generation      sql.NullInt64   `db:"generation"`
+	EventCount      sql.NullInt64   `db:"event_count"`
+	Decision        sql.NullString  `db:"decision"`
+	Severity        sql.NullString  `db:"severity"`
+	Confidence      sql.NullFloat64 `db:"confidence"`
+	Assessment      sql.NullString  `db:"assessment"`
+	LastError       sql.NullString  `db:"last_error"`
+	OwnerUserID     sql.NullString  `db:"owner_user_id"`
+	ChatID          sql.NullString  `db:"chat_id"`
+	ChatType        sql.NullString  `db:"chat_type"`
+	GroupID         sql.NullString  `db:"group_id"`
+	TenantID        sql.NullString  `db:"tenant_id"`
+}
+
+func (s *Store) Situations() store.SituationStore { return situationStore{s} }
+
+const situationColumns = `id, source, correlation_key, title, status, phase, evaluate_after, first_seen_at, awaiting_since, last_event_at, last_evaluated_at, resolved_at, generation, event_count, decision, severity, confidence, assessment, last_error, owner_user_id, chat_id, chat_type, group_id, tenant_id`
+
+func (s *Store) saveSituation(ctx context.Context, situation store.Situation) error {
+	columns := []string{"id", "source", "correlation_key", "title", "status", "phase", "evaluate_after", "first_seen_at", "awaiting_since", "last_event_at", "last_evaluated_at", "resolved_at", "generation", "event_count", "decision", "severity", "confidence", "assessment", "last_error", "owner_user_id", "chat_id", "chat_type", "group_id", "tenant_id"}
+	query := s.upsert(s.table("situations"), columns, columns)
+	_, err := s.db.ExecContext(ctx, s.rebind(query), situation.ID, situation.Source, situation.CorrelationKey, situation.Title, string(situation.Status), string(situation.Phase), timeValue(situation.EvaluateAfter), timeValue(situation.FirstSeenAt), timeValue(situation.AwaitingSince), timeValue(situation.LastEventAt), timeValue(situation.LastEvaluatedAt), timeValue(situation.ResolvedAt), situation.Generation, situation.EventCount, string(situation.Decision), situation.Severity, situation.Confidence, situation.Assessment, situation.LastError, situation.OwnerUserID, situation.ChatID, situation.ChatType, situation.GroupID, situation.TenantID)
+	return wrap("save situation", err)
+}
+
+func (s *Store) getSituation(ctx context.Context, id string) (*store.Situation, error) {
+	var row situationRow
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE id = ?`, situationColumns, s.table("situations"))
+	if err := s.db.GetContext(ctx, &row, s.rebind(query), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, wrap("find situation", err)
+	}
+	value, err := situationFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func (s *Store) listSituations(ctx context.Context, where string, args ...any) ([]store.Situation, error) {
+	var rows []situationRow
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s ORDER BY id`, situationColumns, s.table("situations"), where)
+	if err := s.db.SelectContext(ctx, &rows, s.rebind(query), args...); err != nil {
+		return nil, wrap("list situations", err)
+	}
+	out := make([]store.Situation, 0, len(rows))
+	for _, row := range rows {
+		value, err := situationFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func situationFromRow(row situationRow) (store.Situation, error) {
+	parse := func(value sql.NullString) (time.Time, error) { return parseTime(value) }
+	evaluateAfter, err := parse(row.EvaluateAfter)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation evaluateAfter: %w", err)
+	}
+	firstSeenAt, err := parse(row.FirstSeenAt)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation firstSeenAt: %w", err)
+	}
+	awaitingSince, err := parse(row.AwaitingSince)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation awaitingSince: %w", err)
+	}
+	lastEventAt, err := parse(row.LastEventAt)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation lastEventAt: %w", err)
+	}
+	lastEvaluatedAt, err := parse(row.LastEvaluatedAt)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation lastEvaluatedAt: %w", err)
+	}
+	resolvedAt, err := parse(row.ResolvedAt)
+	if err != nil {
+		return store.Situation{}, fmt.Errorf("decode situation resolvedAt: %w", err)
+	}
+	return store.Situation{ID: row.ID, Source: row.Source.String, CorrelationKey: row.CorrelationKey.String, Title: row.Title.String, Status: store.SituationStatus(row.Status), Phase: store.SituationPhase(row.Phase), EvaluateAfter: evaluateAfter, FirstSeenAt: firstSeenAt, AwaitingSince: awaitingSince, LastEventAt: lastEventAt, LastEvaluatedAt: lastEvaluatedAt, ResolvedAt: resolvedAt, Generation: int(row.Generation.Int64), EventCount: int(row.EventCount.Int64), Decision: store.SituationDecision(row.Decision.String), Severity: row.Severity.String, Confidence: row.Confidence.Float64, Assessment: row.Assessment.String, LastError: row.LastError.String, OwnerUserID: row.OwnerUserID.String, ChatID: row.ChatID.String, ChatType: row.ChatType.String, GroupID: row.GroupID.String, TenantID: row.TenantID.String}, nil
 }

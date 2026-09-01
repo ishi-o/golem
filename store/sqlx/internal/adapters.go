@@ -100,3 +100,39 @@ func (r processedStore) Claim(ctx context.Context, id string) (bool, error) {
 func (r processedStore) Release(ctx context.Context, id string) error {
 	return r.store.release(ctx, id)
 }
+
+type observedEventStore struct{ store *Store }
+
+func (r observedEventStore) Save(ctx context.Context, value store.ObservedEvent) error {
+	return r.store.saveObservedEvent(ctx, value)
+}
+
+func (r observedEventStore) ListBySituation(ctx context.Context, situationID string) ([]store.ObservedEvent, error) {
+	return r.store.listObservedEvents(ctx, situationID)
+}
+
+type situationStore struct{ store *Store }
+
+func (r situationStore) Save(ctx context.Context, value store.Situation) error {
+	return r.store.saveSituation(ctx, value)
+}
+
+func (r situationStore) Get(ctx context.Context, id string) (*store.Situation, error) {
+	return r.store.getSituation(ctx, id)
+}
+
+func (r situationStore) ListByCorrelationAndStatus(ctx context.Context, correlationKey string, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.listSituations(ctx, "correlation_key = ? AND status = ?", correlationKey, string(status))
+}
+
+func (r situationStore) ListBySourceAndCorrelationAndStatus(ctx context.Context, source, correlationKey string, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.listSituations(ctx, "source = ? AND correlation_key = ? AND status = ?", source, correlationKey, string(status))
+}
+
+func (r situationStore) ListByStatus(ctx context.Context, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.listSituations(ctx, "status = ?", string(status))
+}
+
+func (r situationStore) ListByPhase(ctx context.Context, phase store.SituationPhase) ([]store.Situation, error) {
+	return r.store.listSituations(ctx, "phase = ?", string(phase))
+}
