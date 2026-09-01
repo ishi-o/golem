@@ -212,7 +212,11 @@ func (s *Sweeper) evaluate(ctx context.Context, original store.Situation, now ti
 		s.releaseSlot()
 		return
 	}
-	prompt := s.prompt(ctx, policy, claimedSituation)
+	prompt, err := s.prompt(ctx, policy, claimedSituation)
+	if err != nil {
+		s.finish(claimedSituation, agent.OutcomeFailed, err)
+		return
+	}
 	if s.agent == nil {
 		s.finish(claimedSituation, agent.OutcomeFailed, fmt.Errorf("no agent configured"))
 		return
@@ -327,25 +331,26 @@ func (s *Sweeper) acquireSlot() bool {
 
 func (s *Sweeper) releaseSlot() { s.inFlight.Add(-1) }
 
-func (s *Sweeper) prompt(ctx context.Context, policy Policy, situation store.Situation) string {
+func (s *Sweeper) prompt(ctx context.Context, policy Policy, situation store.Situation) (string, error) {
 	brief := situationBrief(situation)
 	evidence, err := s.events.ListBySituation(ctx, situation.ID)
-	if err == nil {
-		sort.Slice(evidence, func(i, j int) bool { return evidence[i].ObservedAt.After(evidence[j].ObservedAt) })
-		if len(evidence) > s.cfg.MaxEvidence {
-			evidence = evidence[:s.cfg.MaxEvidence]
-		}
-		for _, event := range evidence {
-			brief += fmt.Sprintf("\n- [%s] %s", event.Kind, event.Summary)
-			if payload := truncate(event.PayloadJSON, 16384); strings.TrimSpace(payload) != "" {
-				brief += "\n  payload: " + payload
-			}
+	if err != nil {
+		return "", fmt.Errorf("load event evidence for %s: %w", situation.ID, err)
+	}
+	sort.Slice(evidence, func(i, j int) bool { return evidence[i].ObservedAt.After(evidence[j].ObservedAt) })
+	if len(evidence) > s.cfg.MaxEvidence {
+		evidence = evidence[:s.cfg.MaxEvidence]
+	}
+	for _, event := range evidence {
+		brief += fmt.Sprintf("\n- [%s] %s", event.Kind, event.Summary)
+		if payload := truncate(event.PayloadJSON, 16384); strings.TrimSpace(payload) != "" {
+			brief += "\n  payload: " + payload
 		}
 	}
 	if strings.TrimSpace(policy.TriagePrompt) == "" {
-		return brief
+		return brief, nil
 	}
-	return strings.ReplaceAll(policy.TriagePrompt, "{situation}", brief)
+	return strings.ReplaceAll(policy.TriagePrompt, "{situation}", brief), nil
 }
 
 func situationBrief(situation store.Situation) string {

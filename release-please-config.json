@@ -31,6 +31,26 @@
 		"connector/feishu": {
 			"package-name": "github.com/ishi-o/golem/connector/feishu",
 			"component": "connector/feishu"
+		},
+		"connector/email": {
+			"package-name": "github.com/ishi-o/golem/connector/email",
+			"component": "connector/email"
+		},
+		"connector/webhook": {
+			"package-name": "github.com/ishi-o/golem/connector/webhook",
+			"component": "connector/webhook"
+		},
+		"connector/github": {
+			"package-name": "github.com/ishi-o/golem/connector/github",
+			"component": "connector/github"
+		},
+		"connector/gitlab": {
+			"package-name": "github.com/ishi-o/golem/connector/gitlab",
+			"component": "connector/gitlab"
+		},
+		"connector/grafana": {
+			"package-name": "github.com/ishi-o/golem/connector/grafana",
+			"component": "connector/grafana"
 		}
 	}
 }

@@ -245,6 +245,13 @@ func (r *Runner) arm(task store.ScheduledTask) error {
 	if r.stop {
 		return fmt.Errorf("runner is stopped")
 	}
+	if r.armed[task.ID] {
+		// Start may be called again by an embedding application's lifecycle
+		// hook. The store is the source of truth, but re-arming the same row
+		// can create duplicate jobs in schedulers whose ids are not globally
+		// replacing, so the derived armed state is idempotent here.
+		return nil
+	}
 	run := func() { r.fire(task) }
 	if task.CronExpression != "" {
 		if err := r.cfg.Scheduler.ScheduleCron(task.ID, task.CronExpression, run); err != nil {

@@ -59,7 +59,7 @@ func TestEventIntakeDeduplicatesCorrelatesAndBoundsEvidence(t *testing.T) {
 	assert.Equal(t, 2, values[0].EventCount)
 	evidence, err := fixture.Backend().ObservedEvents().ListBySituation(context.Background(), values[0].ID)
 	require.NoError(t, err)
-	assert.Len(t, evidence, 1, "MaxEvidence bounds durable prompt evidence")
+	assert.Len(t, evidence, 2, "MaxEvidence only bounds the triage prompt")
 
 	// A claimed actor is never accepted by a trusted-actor allow-list.
 	untrusted := observation
@@ -82,6 +82,21 @@ func TestEventIntakeDeduplicatesCorrelatesAndBoundsEvidence(t *testing.T) {
 	assert.Len(t, monitor, 1)
 	assert.Len(t, otherValues, 1)
 	assert.NotEqual(t, monitor[0].ID, otherValues[0].ID)
+}
+
+func TestEventSourceCanDisableGlobalResolveAfterEvaluation(t *testing.T) {
+	disabled := false
+	cfg := events.Config{
+		Enabled:                true,
+		ResolveAfterEvaluation: true,
+		Sources: map[string]events.SourceConfig{
+			"monitor": {ResolveAfterEvaluation: &disabled},
+		},
+	}
+
+	policy, ok := cfg.PolicyFor("monitor")
+	require.True(t, ok)
+	assert.False(t, policy.ResolveAfterEvaluation)
 }
 
 func TestEventSweeperRunsMemorylessTriageAndCanResolveAfterEvaluation(t *testing.T) {
@@ -133,7 +148,7 @@ func TestEventToolsKeepSituationOwnershipAtTheFacade(t *testing.T) {
 }
 
 func TestEventPlaybooksAreAdminOnlyAndOwnerScoped(t *testing.T) {
-	base := knowledge.NewInMemory(knowledge.InMemoryOptions{})
+	base := newTestKnowledgeBase()
 	cfg := events.Config{
 		Enabled: true,
 		Sources: map[string]events.SourceConfig{
@@ -184,7 +199,7 @@ func TestEventSweeperUsesTheConfiguredOwnerPlaybook(t *testing.T) {
 	agentConfig.Storage.Location = dir
 	backend := fixture.Backend()
 	provider := coretools.NewProvider(agentConfig, storage.NewWorkspaceFactory(dir), backend, nil)
-	base := knowledge.NewInMemory(knowledge.InMemoryOptions{})
+	base := newTestKnowledgeBase()
 	_, err := base.Index(context.Background(), knowledge.NewTextSource(
 		knowledge.NewScope("triage-owner", "", ""), knowledge.TargetOwn,
 		"Database runbook", "database incident restart procedure", "", "runbook",

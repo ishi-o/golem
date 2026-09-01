@@ -76,13 +76,15 @@ type SourceConfig struct {
 	Playbook Playbook
 	// FailureRoute is used only when the optional sweeper notifier reports a
 	// failed unattended triage run. An observation's route remains its own.
-	FailureRoute           observing.Route
-	TrustedActors          []string
-	Debounce               time.Duration
-	MaxDebounce            time.Duration
-	Cooldown               time.Duration
-	ResolveAfterQuiet      time.Duration
-	ResolveAfterEvaluation bool
+	FailureRoute      observing.Route
+	TrustedActors     []string
+	Debounce          time.Duration
+	MaxDebounce       time.Duration
+	Cooldown          time.Duration
+	ResolveAfterQuiet time.Duration
+	// ResolveAfterEvaluation overrides the global setting when non-nil. A
+	// pointer is necessary because false is a meaningful per-source override.
+	ResolveAfterEvaluation *bool
 	TriagePrompt           string
 }
 
@@ -219,8 +221,8 @@ func (c Config) PolicyFor(source string) (Policy, bool) {
 	if value.TriagePrompt != "" {
 		policy.TriagePrompt = value.TriagePrompt
 	}
-	if value.ResolveAfterEvaluation {
-		policy.ResolveAfterEvaluation = true
+	if value.ResolveAfterEvaluation != nil {
+		policy.ResolveAfterEvaluation = *value.ResolveAfterEvaluation
 	}
 	return policy, true
 }
