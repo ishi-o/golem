@@ -3,7 +3,7 @@
 `core/store` defines the persistence contract — `Backend` — covering
 conversation-reachable records: scheduled tasks, pending questions,
 published resources, shell credentials, MCP server configs, processed
-messages. Every adapter implements `Backend` **and**
+messages, observed event evidence, and correlated situations. Every adapter implements `Backend` **and**
 `chatmemory.Repository` (conversation memory), so one constructor call
 yields everything the runtime needs.
 

@@ -63,20 +63,32 @@ Without a scheduler the schedule tools are simply not offered.
 
 - **Creation** (`CreateScheduledTask`): exactly one of a 5-field `cron`
   expression or an RFC 3339 `scheduledAt`; an optional `expiry` duration
-  (default 7 days, `"never"` is explicit). The runner arms the task
+  (default 7 days, `"never"` is explicit), and an optional positive `maxRuns`
+  for recurring tasks (`0` means unlimited). The runner arms the task
   **before** persisting it — an expression the scheduler rejects errors
   with no task row left behind.
 - **Reload**: `Start` loads ACTIVE tasks; one whose expiry passed while the
   process was down is CANCELLED, not fired — firing it would run stale work
-  the user believed gone.
+  the user believed gone. A due one-shot is caught up once instead of being
+  armed twice.
 - **Firing**: renders the prompt over `{taskText}` (raw text on a render
   failure) and fires `agent.ScheduledTaskScenario` with the task id as
-  request id, resuming the creating conversation. Expiry is checked at fire
-  time too.
+  request id, resuming the creating conversation. Expiry and `maxRuns` are
+  checked at fire time too; concurrent firings of one task are collapsed.
 - **Statuses**: a one-shot becomes COMPLETED, FAILED or CANCELLED with its
   run's outcome; a cron task stays ACTIVE whatever one firing did.
+- **Update** (`UpdateScheduledTask`): owner-checked; changes supplied task
+  fields while preserving omitted fields and the run count. A firing may use
+  `StopThisScheduledTask` or `RescheduleThisScheduledTask` through its task
+  context; stopping completes the current task without cancelling the answer,
+  and rescheduling keeps the same task row. Recurring tasks are stopped
+  instead of rescheduled.
 - **Cancellation** (`CancelScheduledTask`): owner-checked; disarms the job
   and aborts a firing in flight (the request id equals the task id).
+
+Task identity includes the creating `ConversationID`, and optionally the
+group and tenant scope. These values are copied into each firing so memory,
+files, knowledge, and sandbox access remain aligned with the original run.
 
 The store is the source of truth: the armed jobs are derived state, rebuilt
 from it, so a restart loses nothing but the wall-clock position of a

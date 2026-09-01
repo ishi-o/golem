@@ -12,9 +12,10 @@ from an empty `main` to a firing agent.
 4. [Model](#model)
 5. [Tool provider and built-in tools](#tool-provider-and-built-in-tools)
 6. [The agent](#the-agent)
-7. [Runs, listeners, cancellation](#runs-listeners-cancellation)
-8. [User questions](#user-questions)
-9. [A complete minimal program](#a-complete-minimal-program)
+7. [Knowledge and external events](#knowledge-and-external-events)
+8. [Runs, listeners, cancellation](#runs-listeners-cancellation)
+9. [User questions](#user-questions)
+10. [A complete minimal program](#a-complete-minimal-program)
 
 ## Install
 
@@ -61,9 +62,9 @@ The mongodb and redis adapters have the same shape — see
 
 ## Model
 
-The agent takes any eino `model.ToolCallingChatModel`. core deliberately
-ships none; the OpenAI-compatible one (used by
-[golem-cli](https://github.com/ishi-o/golem-cli)) comes from eino-ext:
+The agent takes any Eino `model.ToolCallingChatModel`. Core deliberately
+ships no provider-specific model. Use Eino-ext directly for OpenAI-compatible
+models:
 
 ```go
 import einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -116,6 +117,57 @@ schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledT
 // Subagents (optional): the agent as a tool of its own. See Subagents.
 subagent.Register(provider, agent, cfg, nil, logger)
 ```
+
+## Knowledge and external events
+
+Knowledge is an optional facade backed by an Eino-native implementation. The
+reference in-memory implementation is useful for tests and small processes;
+production applications can implement `knowledge.KnowledgeBase` in another
+module without changing the agent:
+
+```go
+base := knowledge.NewInMemory(knowledge.InMemoryOptions{})
+a := agent.New(chatModel, backend, provider, cfg,
+    agent.WithBackend(backend),
+    agent.WithKnowledgeBase(base, knowledge.RetrievalConfig{TopK: 4, MaxChars: 12000}),
+)
+for _, t := range knowledge.NewTools(base, workspaces.ForOwner("admin")).List() {
+    provider.Register(t, nil)
+}
+```
+
+The agent retrieves scoped knowledge before ordinary model turns and frames
+the passages as untrusted reference data. Explicit `KnowledgeRetrieval`
+requests can pin a different scope and filter, which is how unattended event
+triage uses a source owner's fixed playbook rather than event text as a query.
+
+External events are an optional intake/sweeper pair. Intake only normalizes,
+deduplicates, correlates, and stores bounded evidence; the sweeper performs
+the model call later:
+
+```go
+eventCfg := events.Config{Enabled: true, Sources: map[string]events.SourceConfig{
+    "monitor": {
+        Owner: events.Owner{UserID: "triage-owner"},
+        Playbook: events.Playbook{Query: "database incident", DocIDs: []string{"runbook"}},
+    },
+}}
+intake, _ := events.NewIntake(eventCfg, backend.Situations(), backend.ObservedEvents(), backend.ProcessedMessages())
+sweeper, _ := events.NewSweeper(eventCfg, a, backend.Situations(), backend.ObservedEvents(), backend.ProcessedMessages())
+sweeper.Start(ctx)
+for _, t := range events.NewTools(backend.Situations(), backend.ObservedEvents()).List() {
+    provider.Register(t, nil)
+}
+for _, t := range events.NewPlaybookTools(base, eventCfg, isAdmin).List() {
+    provider.Register(t, nil)
+}
+```
+
+Connectors call `intake.Observe` after authenticating the source actor. The
+playbook tools are administrator-only and write documents to the configured
+owner's personal knowledge scope. `events.TriageScenario` is memoryless and
+does not receive scheduling, subagent, administrator-knowledge, or playbook
+mutation tools.
 
 Your own tools register individually — see
 [Extending](extending.md). The full family inventory is in
@@ -173,7 +225,8 @@ every tool; `ScheduledTaskScenario` (used by the schedule runner) resumes
 the creating conversation but excludes the schedule tools so a firing
 cannot schedule more work; `SubagentScenario` (used by the subagent tools)
 joins no conversation and withholds the subagent and schedule tools, which
-is the depth cap — see [Subagents](subagents.md).
+is the depth cap — see [Subagents](subagents.md). Event triage is a separate
+memoryless scenario with the same unattended-work restrictions.
 
 Listeners also carry `OnReasoning` (the model's thinking so far, one block
 per model call — a reasoning-capable model's stream carries it) and
