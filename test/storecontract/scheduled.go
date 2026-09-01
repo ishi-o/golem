@@ -14,12 +14,19 @@ func testScheduledTask(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	owner := f.Owner()
 	repo := f.Backend().ScheduledTasks()
+	nextFireAt := time.Now().Add(5 * time.Minute)
 
 	task := store.ScheduledTask{
 		ID:             "task-1",
 		UserID:         owner,
 		TaskText:       "check the thing",
 		CronExpression: "*/5 * * * *",
+		ConversationID: "conversation-1",
+		GroupID:        "group-1",
+		TenantID:       "tenant-1",
+		NextFireAt:     nextFireAt,
+		MaxRuns:        3,
+		RunCount:       1,
 		Background:     true,
 		Status:         store.ScheduledTaskStatusActive,
 	}
@@ -45,5 +52,11 @@ func testScheduledTask(t *testing.T, f Fixture) {
 	assert.Equal(t, store.ScheduledTaskStatusCompleted, found.Status)
 	assert.Equal(t, "check the thing", found.TaskText)
 	assert.Equal(t, "*/5 * * * *", found.CronExpression)
+	assert.Equal(t, "conversation-1", found.ConversationID)
+	assert.Equal(t, "group-1", found.GroupID)
+	assert.Equal(t, "tenant-1", found.TenantID)
+	assert.WithinDuration(t, nextFireAt, found.NextFireAt, time.Millisecond)
+	assert.Equal(t, 3, found.MaxRuns)
+	assert.Equal(t, 1, found.RunCount)
 	assert.True(t, found.Background)
 }

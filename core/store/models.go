@@ -214,9 +214,12 @@ type ScheduledTask struct {
 	// UserID is indexed for ListByUserAndStatus.
 	UserID string
 
-	ChatID        string
-	ChatType      string
-	RootMessageID string
+	ChatID         string
+	ChatType       string
+	RootMessageID  string
+	ConversationID string
+	GroupID        string
+	TenantID       string
 
 	// TaskText is the prompt to run when the task fires.
 	TaskText string
@@ -239,6 +242,14 @@ type ScheduledTask struct {
 	// message on top of those, and in the "otherwise do nothing" case it is
 	// the only message, which is the opposite of what was asked for.
 	Background bool
+
+	// NextFireAt is optional derived state for implementations that persist
+	// catch-up scheduling. A zero value keeps compatibility with older rows.
+	NextFireAt time.Time
+	// MaxRuns limits total firings for recurring tasks; zero means unlimited.
+	MaxRuns int
+	// RunCount is incremented when a firing is claimed.
+	RunCount int
 
 	// Status is stored as its name so the value matches what the other
 	// backends write and stays readable and stable if the enum is ever

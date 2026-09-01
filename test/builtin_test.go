@@ -40,7 +40,7 @@ func TestBuiltinLists(t *testing.T) {
 		"todo":       {tools.ToolNameTodoWrite},
 		"ask":        {tools.ToolNameAskUserQuestion},
 		"files":      {tools.ToolNameReadFile, tools.ToolNameWriteFile, tools.ToolNameListFiles, tools.ToolNameGrepFiles},
-		"memories":   {tools.ToolNameReadMemory, tools.ToolNameWriteMemory},
+		"memories":   {tools.ToolNameReadMemory, tools.ToolNameWriteMemory, tools.ToolNameCreateMemory, tools.ToolNameInsertMemory, tools.ToolNameReplaceMemory, tools.ToolNameRenameMemory, tools.ToolNameDeleteMemory},
 		"skills":     {tools.ToolNameListSkills, tools.ToolNameReadSkillFile, tools.ToolNameWriteSkill, tools.ToolNameDeleteSkill},
 		"publish":    {tools.ToolNamePublishFile, tools.ToolNameUpdatePublishedFile, tools.ToolNameUnpublishFile, tools.ToolNameRenewPublishedFile},
 		"sandbox":    {tools.ToolNameBash, tools.ToolNameBashOutput, tools.ToolNameKillShell, tools.ToolNameRestartSandbox},

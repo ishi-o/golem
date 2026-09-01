@@ -17,7 +17,7 @@ import (
 // it to add its own rules rather than to restate these.
 
 // DefaultGuideThreshold is the tool-result size above which the large
-// response interceptor diverts the result to a file in the user's workspace.
+// response middleware diverts the result to a file in the user's workspace.
 // 30000 characters is roughly where a tool result starts crowding the context
 // window more than it earns.
 const DefaultGuideThreshold = 30000
@@ -64,7 +64,7 @@ type AI struct {
 	// surfaces render.
 	ModelPricing map[string]ModelPricing
 
-	// GuideThreshold is the tool-result size the large response interceptor
+	// GuideThreshold is the tool-result size the large response middleware
 	// diverts at; 0 means DefaultGuideThreshold.
 	GuideThreshold int
 
@@ -85,7 +85,6 @@ type Tools struct {
 	AskUserQuestion AskUserQuestion
 	PublishFile     PublishFile
 	MCP             MCP
-	ToolSearch      ToolSearch
 	Subagent        Subagent
 }
 
@@ -110,15 +109,6 @@ type MCP struct {
 	// over plain http, and to resolve to addresses the guard would otherwise
 	// reject (a local monitoring stack, say).
 	TrustedHosts []string
-}
-
-// ToolSearch configures the tool-search index. MaxResults bounds how many
-// tools one search materializes; EnableThreshold is the MCP tool count above
-// which a run hides its tools behind the search tool instead of sending every
-// definition to the model on every call.
-type ToolSearch struct {
-	MaxResults      int
-	EnableThreshold int
 }
 
 // Subagent configures the subagent tools (core/subagent). MaxConcurrent
@@ -152,12 +142,6 @@ func (c *Config) Normalize() error {
 	if c.AI.Tools.AskUserQuestion.TTL <= 0 {
 		// 24h, Feishu's own card life being the practical ceiling anyway.
 		c.AI.Tools.AskUserQuestion.TTL = 24 * time.Hour
-	}
-	if c.AI.Tools.ToolSearch.MaxResults <= 0 {
-		c.AI.Tools.ToolSearch.MaxResults = 5
-	}
-	if c.AI.Tools.ToolSearch.EnableThreshold <= 0 {
-		c.AI.Tools.ToolSearch.EnableThreshold = 20
 	}
 	if c.AI.Tools.Subagent.MaxConcurrent <= 0 {
 		c.AI.Tools.Subagent.MaxConcurrent = 10

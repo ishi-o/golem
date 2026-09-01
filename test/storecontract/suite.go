@@ -40,6 +40,7 @@ func Run(t *testing.T, f Fixture) {
 	t.Run("PendingQuestion", func(t *testing.T) { testPendingQuestion(t, f) })
 	t.Run("PublishedResource", func(t *testing.T) { testPublishedResource(t, f) })
 	t.Run("ScheduledTask", func(t *testing.T) { testScheduledTask(t, f) })
+	t.Run("ObservedEventsAndSituations", func(t *testing.T) { testObservedEventsAndSituations(t, f) })
 	t.Run("ShellCredential", func(t *testing.T) { testShellCredential(t, f) })
 	t.Run("ProcessedMessage", func(t *testing.T) { testProcessedMessage(t, f) })
 	t.Run("ChatMemory", func(t *testing.T) { testChatMemory(t, f) })

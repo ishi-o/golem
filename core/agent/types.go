@@ -47,13 +47,14 @@ func (ScenarioBase) ConversationMemory() bool { return true }
 func (ScenarioBase) Offers(string) bool       { return true }
 
 // ChatScenario is the ordinary run: a user said something, the agent answers
-// in the conversation.
-var ChatScenario Scenario = &namedScenario{ScenarioBase{}, "CHAT"}
+// in the conversation. Task-self-control tools are omitted because an
+// ordinary run is not the firing of a task.
+var ChatScenario Scenario = &chatScenario{namedScenario{ScenarioBase{}, "CHAT"}}
 
 // ScheduledTaskScenario is a firing of a scheduled task. It does not get the
-// schedule tools: a run that fires on a schedule must not be able to
-// schedule more work — the firing prompt tells the model so, and Offers is
-// what actually enforces it.
+// tools that create or manage another task, but it does get the two
+// task-self-control tools: a firing may stop or re-arm the task it is already
+// executing without creating a second task.
 var ScheduledTaskScenario Scenario = &scheduledTaskScenario{namedScenario{ScenarioBase{}, "SCHEDULED_TASK"}}
 
 // SubagentScenario is a run another run started. It joins no conversation —
@@ -71,11 +72,24 @@ type namedScenario struct {
 
 func (s *namedScenario) Name() string { return s.name }
 
+type chatScenario struct{ namedScenario }
+
+func (s *chatScenario) Offers(toolName string) bool {
+	switch toolName {
+	case tools.ToolNameStopScheduledTask, tools.ToolNameRescheduleTask:
+		return false
+	default:
+		return true
+	}
+}
+
 type scheduledTaskScenario struct{ namedScenario }
 
 func (s *scheduledTaskScenario) Offers(toolName string) bool {
 	switch toolName {
-	case tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask:
+	case tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask,
+		tools.ToolNameUpdateScheduledTask,
+		tools.ToolNameListPlaybooks, tools.ToolNameWritePlaybook:
 		return false
 	}
 	return true
@@ -88,7 +102,9 @@ func (s *subagentScenario) ConversationMemory() bool { return false }
 func (s *subagentScenario) Offers(toolName string) bool {
 	switch toolName {
 	case tools.ToolNameStartSubagent, tools.ToolNameWaitSubagent, tools.ToolNameCancelSubagent,
-		tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask:
+		tools.ToolNameCreateScheduledTask, tools.ToolNameListScheduledTasks, tools.ToolNameCancelScheduledTask,
+		tools.ToolNameUpdateScheduledTask, tools.ToolNameStopScheduledTask, tools.ToolNameRescheduleTask,
+		tools.ToolNameListPlaybooks, tools.ToolNameWritePlaybook:
 		return false
 	}
 	return true

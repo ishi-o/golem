@@ -282,7 +282,7 @@ func (r taskStore) Get(ctx context.Context, id string) (*store.ScheduledTask, er
 	if err != nil || !found {
 		return nil, err
 	}
-	value := store.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, Background: document.Background, Status: store.ScheduledTaskStatus(document.Status)}
+	value := store.ScheduledTask{ID: document.ID, UserID: document.UserID, ChatID: document.ChatID, ChatType: document.ChatType, RootMessageID: document.RootMessageID, ConversationID: document.ConversationID, GroupID: document.GroupID, TenantID: document.TenantID, TaskText: document.TaskText, CronExpression: document.CronExpression, ScheduledAt: document.ScheduledAt, ExpiresAt: document.ExpiresAt, NextFireAt: document.NextFireAt, MaxRuns: document.MaxRuns, RunCount: document.RunCount, Background: document.Background, Status: store.ScheduledTaskStatus(document.Status)}
 	return &value, nil
 }
 func (r taskStore) ListByStatus(ctx context.Context, status store.ScheduledTaskStatus) ([]store.ScheduledTask, error) {
@@ -341,6 +341,48 @@ func (r processedStore) Claim(ctx context.Context, id string) (bool, error) {
 }
 func (r processedStore) Release(ctx context.Context, id string) error {
 	return r.store.release(ctx, id)
+}
+
+type observedEventStore struct{ store *Store }
+
+func (r observedEventStore) Save(ctx context.Context, value store.ObservedEvent) error {
+	return r.store.saveObservedEvent(ctx, value)
+}
+
+func (r observedEventStore) ListBySituation(ctx context.Context, situationID string) ([]store.ObservedEvent, error) {
+	return r.store.findObservedEvents(ctx, situationID)
+}
+
+type situationStore struct{ store *Store }
+
+func (r situationStore) Save(ctx context.Context, value store.Situation) error {
+	return r.store.saveSituation(ctx, value)
+}
+
+func (r situationStore) Get(ctx context.Context, id string) (*store.Situation, error) {
+	var document situationDocument
+	found, err := r.store.get(ctx, r.store.record("situation", id), &document)
+	if err != nil || !found {
+		return nil, err
+	}
+	value := situationValue(document)
+	return &value, nil
+}
+
+func (r situationStore) ListByCorrelationAndStatus(ctx context.Context, correlationKey string, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.findSituationsByIndex(ctx, "situation-correlation-status", correlationKey+"\x00"+string(status))
+}
+
+func (r situationStore) ListBySourceAndCorrelationAndStatus(ctx context.Context, source, correlationKey string, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.findSituationsByIndex(ctx, "situation-source-correlation-status", source+"\x00"+correlationKey+"\x00"+string(status))
+}
+
+func (r situationStore) ListByStatus(ctx context.Context, status store.SituationStatus) ([]store.Situation, error) {
+	return r.store.findSituationsByIndex(ctx, "situation-status", string(status))
+}
+
+func (r situationStore) ListByPhase(ctx context.Context, phase store.SituationPhase) ([]store.Situation, error) {
+	return r.store.findSituationsByIndex(ctx, "situation-phase", string(phase))
 }
 
 func wrap(operation string, err error) error {

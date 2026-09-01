@@ -20,6 +20,8 @@ type Backend interface {
 	ScheduledTasks() ScheduledTaskStore
 	ShellCredentials() ShellCredentialStore
 	ProcessedMessages() ProcessedMessageStore
+	ObservedEvents() ObservedEventStore
+	Situations() SituationStore
 }
 
 // MCPServerConfigStore stores MCP server registrations.
@@ -118,4 +120,22 @@ type ProcessedMessageStore interface {
 
 	// Release gives up a claim, for the nothing-was-done case only.
 	Release(ctx context.Context, id string) error
+}
+
+// ObservedEventStore stores the bounded evidence for a situation.
+type ObservedEventStore interface {
+	Save(ctx context.Context, event ObservedEvent) error
+	ListBySituation(ctx context.Context, situationID string) ([]ObservedEvent, error)
+}
+
+// SituationStore stores the durable state used by the event intake and
+// sweeper. Queries intentionally use equality-only predicates so SQL, MongoDB
+// and Redis can implement the same facade.
+type SituationStore interface {
+	Save(ctx context.Context, situation Situation) error
+	Get(ctx context.Context, id string) (*Situation, error)
+	ListByCorrelationAndStatus(ctx context.Context, correlationKey string, status SituationStatus) ([]Situation, error)
+	ListBySourceAndCorrelationAndStatus(ctx context.Context, source, correlationKey string, status SituationStatus) ([]Situation, error)
+	ListByStatus(ctx context.Context, status SituationStatus) ([]Situation, error)
+	ListByPhase(ctx context.Context, phase SituationPhase) ([]Situation, error)
 }

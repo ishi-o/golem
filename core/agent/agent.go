@@ -16,6 +16,7 @@ import (
 	"github.com/ishi-o/golem/core/chatmemory"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/i18n"
+	"github.com/ishi-o/golem/core/knowledge"
 	"github.com/ishi-o/golem/core/prompt"
 	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/tools"
@@ -45,6 +46,10 @@ type Agent struct {
 	// modelName names the model in OnModel/OnUsage callbacks when the stream
 	// does not carry one.
 	modelName string
+	// knowledge is optional. It is a facade over Eino-native retrievers and is
+	// consulted before each ordinary model call's user message is built.
+	knowledge       knowledge.KnowledgeBase
+	knowledgeConfig knowledge.RetrievalConfig
 	// defaultListeners observe every run, however it was started — how a
 	// surface takes part in runs it did not initiate (a scheduled task
 	// firing, say).
@@ -111,6 +116,16 @@ func WithMemoryWindow(window int) AgentOption {
 // does not include one.
 func WithModelName(name string) AgentOption {
 	return func(a *Agent) { a.modelName = name }
+}
+
+// WithKnowledgeBase attaches an optional scoped knowledge base. Retrieval is
+// best-effort: a vector-store outage is logged and the conversation still has
+// a chance to answer from its normal context.
+func WithKnowledgeBase(base knowledge.KnowledgeBase, cfg knowledge.RetrievalConfig) AgentOption {
+	return func(a *Agent) {
+		a.knowledge = base
+		a.knowledgeConfig = cfg
+	}
 }
 
 // WithDefaultListener adds a listener that observes every run.
@@ -519,7 +534,7 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 
 	state.notifyAll("OnSubscribe", func(l ResponseListener) { l.OnSubscribe() })
 
-	messages, err := a.buildMessages(runCtx, req, composition)
+	messages, err := a.buildMessages(runCtx, req)
 	if err != nil {
 		finish(OutcomeFailed, err)
 		return
@@ -653,26 +668,20 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 		if len(assistant.ToolCalls) == 0 {
 			break
 		}
-		// Execute the tool calls, append their results, loop. A tool error
-		// is a tool result the model reads, not a run failure — the model
-		// gets to correct itself.
-		ended := false
-		for _, call := range assistant.ToolCalls {
-			result, endTurn, err := a.executeTool(runCtx, composition, call)
-			if err != nil {
-				if runCtx.Err() != nil {
-					finish(OutcomeCancelled, nil)
-					return
-				}
-				result, endTurn = fmt.Sprintf("tool error: %v", err), false
+		// Eino owns tool dispatch and tool-message construction. A tool error
+		// is converted to a tool result by the provider middleware so the
+		// model can correct itself rather than the run failing.
+		toolMessages, ended, err := composition.Invoke(runCtx, assistant)
+		if err != nil {
+			if runCtx.Err() != nil {
+				finish(OutcomeCancelled, nil)
+				return
 			}
-			toolMsg := &schema.Message{Role: schema.Tool, ToolCallID: call.ID, ToolName: call.Function.Name, Content: result}
-			messages = append(messages, toolMsg)
-			newMessages = append(newMessages, toolMsg)
-			if endTurn {
-				ended = true
-			}
+			finish(OutcomeFailed, fmt.Errorf("executing tools: %w", err))
+			return
 		}
+		messages = append(messages, toolMessages...)
+		newMessages = append(newMessages, toolMessages...)
 		if ended {
 			// A turn-ending tool (the ask, with answers arriving later):
 			// the result is for the application and the next run, not for
@@ -702,29 +711,8 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 	finish(OutcomeCompleted, nil)
 }
 
-// executeTool dispatches one tool call through the composition's wrapped
-// tools, unwrapping the end-turn sentinel (see interceptor.go).
-func (a *Agent) executeTool(ctx context.Context, comp *tools.Composition, call schema.ToolCall) (string, bool, error) {
-	for _, t := range comp.Tools {
-		info, err := t.Info(ctx)
-		if err != nil || info == nil || info.Name != call.Function.Name {
-			continue
-		}
-		result, err := t.InvokableRun(ctx, call.Function.Arguments)
-		if err != nil {
-			return "", false, err
-		}
-		result, end := tools.SplitEndTurn(result)
-		return result, end, nil
-	}
-	// An unroutable tool call is a recovery instruction, not a failure: the
-	// model hallucinating a tool it was not offered is a normal outcome of
-	// an index-based tool set.
-	return fmt.Sprintf("no tool named %q is available in this run; say so and continue without it", call.Function.Name), false, nil
-}
-
 // buildMessages renders the system prompt and loads history.
-func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Composition) ([]*schema.Message, error) {
+func (a *Agent) buildMessages(ctx context.Context, req Request) ([]*schema.Message, error) {
 	vars := map[string]string{
 		"threadId": "",
 		"parentId": "",
@@ -741,6 +729,48 @@ func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Comp
 		return nil, fmt.Errorf("rendering system prompt: %w", err)
 	}
 	messages := []*schema.Message{{Role: schema.System, Content: system}}
+	if a.knowledge != nil {
+		retrieval := knowledge.KnowledgeRetrieval{Scope: knowledge.NewScope(req.UserID, req.GroupID, req.TenantID), Query: req.Text, TopK: a.knowledgeConfig.TopK}
+		if req.KnowledgeRetrieval != nil {
+			retrieval = *req.KnowledgeRetrieval
+			if strings.TrimSpace(retrieval.Query) == "" {
+				retrieval.Query = req.Text
+			}
+		}
+		topK := retrieval.TopK
+		if topK <= 0 {
+			topK = a.knowledgeConfig.TopK
+		}
+		if topK <= 0 {
+			topK = 4
+		}
+		if strings.TrimSpace(retrieval.Query) != "" {
+			var documents []*schema.Document
+			var searchErr error
+			filteredSearch, supportsFiltering := a.knowledge.(knowledge.FilteredKnowledgeBase)
+			if retrieval.Filter != nil && supportsFiltering {
+				documents, searchErr = filteredSearch.SearchFiltered(ctx, retrieval.Scope, retrieval.Query, topK, retrieval.Filter)
+			} else {
+				documents, searchErr = a.knowledge.Search(ctx, retrieval.Scope, retrieval.Query, topK)
+			}
+			if searchErr != nil {
+				a.log.Warn("knowledge retrieval failed; continuing without it", "err", searchErr)
+			} else {
+				if retrieval.Filter != nil {
+					filtered := documents[:0]
+					for _, document := range documents {
+						if document != nil && retrieval.Filter(knowledge.ReadMetadata(document.MetaData)) {
+							filtered = append(filtered, document)
+						}
+					}
+					documents = filtered
+				}
+				if len(documents) > 0 {
+					messages = append(messages, &schema.Message{Role: schema.System, Content: knowledge.ContextText(documents, a.knowledgeConfig.MaxChars)})
+				}
+			}
+		}
+	}
 	if a.memory != nil && req.Scenario.ConversationMemory() && req.ConversationID != "" {
 		history, err := a.memory.Load(ctx, req.ConversationID, a.memoryWindow)
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/ishi-o/golem/core/config"
@@ -33,10 +34,11 @@ type Provider struct {
 	repos store.Backend
 	// mcp builds the run's MCP tools, nil when the deployment has none.
 	mcp MCPBuilder
-	// interceptors wrap every tool the run offers; the large response
-	// interceptor is added by NewProvider from the config.
-	interceptors []Interceptor
-	log          *slog.Logger
+	// middlewares are installed directly on Eino's ToolsNode. Built-in
+	// middleware is added by NewProvider; callers can append their own with
+	// WithToolMiddleware.
+	middlewares []compose.ToolMiddleware
+	log         *slog.Logger
 
 	mu         sync.RWMutex
 	registered []registeredTool
@@ -76,16 +78,32 @@ func WithLogger(log *slog.Logger) ProviderOption {
 	}
 }
 
-// WithInterceptor adds an interceptor to the provider's tool chain.
-func WithInterceptor(interceptor Interceptor) ProviderOption {
+// WithToolMiddleware adds native Eino middleware to the provider's tool
+// chain. The middleware order is the order in which options are applied,
+// after golem's built-in middleware.
+func WithToolMiddleware(middleware compose.ToolMiddleware) ProviderOption {
 	return func(p *Provider) {
-		if interceptor != nil {
-			p.interceptors = append(p.interceptors, interceptor)
+		if middleware.Invokable != nil ||
+			middleware.Streamable != nil ||
+			middleware.EnhancedInvokable != nil ||
+			middleware.EnhancedStreamable != nil {
+			p.middlewares = append(p.middlewares, middleware)
 		}
 	}
 }
 
-// NewProvider constructs the provider and adds the built-in interceptor.
+// WithInterceptor adds the convenient before/after interceptor facade to the
+// provider's Eino tool chain. Use WithToolMiddleware when the native Eino
+// middleware hooks or streamable/enhanced tools are needed.
+func WithInterceptor(interceptor Interceptor) ProviderOption {
+	return func(p *Provider) {
+		if interceptor != nil {
+			p.middlewares = append(p.middlewares, interceptorMiddleware(interceptor))
+		}
+	}
+}
+
+// NewProvider constructs the provider and adds the built-in tool middleware.
 func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos store.Backend, mcp MCPBuilder, options ...ProviderOption) *Provider {
 	_ = cfg.Normalize()
 	if workspaces == nil {
@@ -97,11 +115,12 @@ func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos 
 		repos:      repos,
 		mcp:        mcp,
 		log:        slog.Default(),
-		interceptors: []Interceptor{
-			&LargeResponseInterceptor{
+		middlewares: []compose.ToolMiddleware{
+			toolErrorMiddleware(),
+			NewLargeResponseMiddleware(LargeResponseMiddlewareConfig{
 				GuideThreshold: cfg.AI.GuideThreshold,
 				Workspaces:     workspaces,
-			},
+			}),
 		},
 	}
 	for _, option := range options {
@@ -164,13 +183,39 @@ type ComposeRequest struct {
 	AskEnabled bool
 }
 
-// Composition is one run's tool set. Close must be called when the run
-// ends, whatever it ended by; it closes the MCP connections the composition
-// opened, and is safe to call when there are none.
+// Composition is one run's tool set and its Eino ToolsNode. Close must be
+// called when the run ends, whatever it ended by; it closes the MCP
+// connections the composition opened, and is safe to call when there are
+// none.
 type Composition struct {
 	Tools []tool.InvokableTool
 	Info  []*schema.ToolInfo
 	Close func()
+	node  *compose.ToolsNode
+}
+
+// Invoke executes the tool calls in an assistant message and reports whether
+// one of them requested that the run end. Eino owns dispatch, argument
+// handling, callbacks, and tool-message construction; the end-turn marker is
+// the one piece of run policy that remains a golem concern.
+func (c *Composition) Invoke(ctx context.Context, assistant *schema.Message) ([]*schema.Message, bool, error) {
+	if c == nil || c.node == nil {
+		return nil, false, fmt.Errorf("golem/tools: composition has no tool node")
+	}
+	messages, err := c.node.Invoke(ctx, assistant)
+	if err != nil {
+		return nil, false, err
+	}
+	ended := false
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		content, end := SplitEndTurn(message.Content)
+		message.Content = content
+		ended = ended || end
+	}
+	return messages, ended, nil
 }
 
 // Compose assembles the run's tools. It is called from the run goroutine,
@@ -285,23 +330,48 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 		}
 	}
 
-	// Wrap with the interceptor chain and collect the model-facing info.
+	// Keep the original Eino values in Composition.Tools. The ToolsNode owns
+	// dispatch and applies the middleware chain exactly once.
 	comp.Tools = make([]tool.InvokableTool, 0, len(tools))
 	comp.Info = make([]*schema.ToolInfo, 0, len(tools))
+	baseTools := make([]tool.BaseTool, 0, len(tools))
 	for _, t := range tools {
 		if t == nil {
 			continue
 		}
-		wrapped := WrapTool(t, p.interceptors...)
-		info, err := wrapped.Info(ctx)
+		info, err := t.Info(ctx)
 		if err != nil {
 			comp.Close()
 			return nil, fmt.Errorf("tool info: %w", err)
 		}
-		comp.Tools = append(comp.Tools, wrapped)
+		if info == nil {
+			comp.Close()
+			return nil, fmt.Errorf("tool info: tool at index %d returned nil metadata", len(baseTools))
+		}
+		comp.Tools = append(comp.Tools, t)
 		comp.Info = append(comp.Info, info)
+		baseTools = append(baseTools, t)
 	}
+
+	node, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools:               baseTools,
+		ExecuteSequentially: true,
+		UnknownToolsHandler: unknownTool,
+		ToolCallMiddlewares: p.middlewares,
+	})
+	if err != nil {
+		comp.Close()
+		return nil, fmt.Errorf("tool node: %w", err)
+	}
+	comp.node = node
 	return comp, nil
+}
+
+func unknownTool(_ context.Context, name, _ string) (string, error) {
+	// An unroutable tool call is a recovery instruction, not a failure: the
+	// model hallucinating a tool it was not offered is a normal outcome of an
+	// index-based tool set.
+	return fmt.Sprintf("no tool named %q is available in this run; say so and continue without it", name), nil
 }
 
 func (p *Provider) logger() *slog.Logger {

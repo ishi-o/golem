@@ -9,6 +9,12 @@ type Builtin interface {
 }
 ```
 
+`tools.Provider.Compose` gives these Eino tools to `compose.ToolsNode` for
+dispatch and standard `schema.ToolMessage` construction. The node is
+configured for sequential execution; provider middleware supplies large-result
+handling and model-visible tool errors, while application-specific behavior can
+use native Eino tool middleware.
+
 One type per family — single-tool families included — so registration and
 composition treat them all the same way.
 
@@ -18,15 +24,19 @@ composition treat them all the same way.
 | --- | --- | --- |
 | Clock | `CurrentDateTimeTools` | `CurrentDateTime` |
 | Files | `FileSystemTools` | `ReadFile`, `WriteFile`, `ListFiles`, `GrepFiles` |
-| Memory | `MemoryTools` | `MemoryView`, `MemoryWrite` |
+| Memory | `MemoryTools` | `MemoryView`, `MemoryWrite`, `MemoryCreate`, `MemoryInsert`, `MemoryStrReplace`, `MemoryRename`, `MemoryDelete` |
 | Skills | `SkillTools` | `ListSkills`, `ReadSkillFile`, `WriteSkillFile`, `DeleteSkill` |
 | Planning | `TodoWriteTools` | `TodoWrite` |
 | Ask | `AskUserQuestionTools` | `AskUserQuestionTool` |
 | Publish | `PublishFileTools` | `PublishFile`, `UpdatePublishedFile`, `UnpublishFile`, `RenewPublishedFile` |
 | Shell | `SandboxTools` | `Bash`, `BashOutput`, `KillShell`, `RestartShellContainer`/`RestartShellPod` |
 | Credentials | `CredentialTools` | `SetCredential`, `ListCredentials`, `DeleteCredential` |
-| Schedule | `schedule.Tools` | `CreateScheduledTask`, `ListScheduledTasks`, `CancelScheduledTask` |
+| Knowledge | `knowledge.Tools` | `ListKnowledgeBase`, `IndexKnowledge`, `SearchKnowledge`, `UpdateKnowledgeScope`, `DeleteKnowledge` |
+| Knowledge administration | `knowledge.AdminTools` | `ListOwnerKnowledgeBase`, `SearchOwnerKnowledge` |
+| Schedule | `schedule.Tools` | `CreateScheduledTask`, `ListScheduledTasks`, `CancelScheduledTask`, `UpdateScheduledTask`, `StopThisScheduledTask`, `RescheduleThisScheduledTask` |
 | Subagents | `subagent.Tools` | `StartSubagent`, `WaitForSubagent`, `CancelSubagent` |
+| External events | `events.Tools` | `ListOpenSituations`, `GetSituationEvents`, `RecordSituationAssessment`, `ResolveSituation` |
+| Event playbooks | `events.PlaybookTools` | `ListPlaybooks`, `WritePlaybook` |
 
 External MCP tools can be registered alongside the built-ins — see
 [Extending](extending.md#mcp-servers).
@@ -39,8 +49,9 @@ asking user's workspace and wired to that run's handlers. They are not
 registered and cannot be: their inputs only exist per run. You get them
 automatically from `tools.NewProvider`.
 
-**Process-wide families** — shell, credentials, schedule, subagents — are
-registered once during application setup, in one explicit call:
+**Explicit families** — knowledge, external events, event playbooks, shell,
+credentials, schedule, and subagents — are registered once during application
+setup because they carry process-wide dependencies:
 
 ```go
 err := tools.RegisterBuiltins(provider, tools.Builtins{
@@ -49,9 +60,11 @@ err := tools.RegisterBuiltins(provider, tools.Builtins{
 })
 ```
 
-The schedule family has its own registration in `core/schedule` (it needs
-the runner) — see [Scheduled tasks](scheduled-tasks.md) — and the subagent
-family in `core/subagent` (it needs the agent) — see
+The knowledge and event families are registered from `core/knowledge` and
+`core/events`; playbook tools require an application-supplied administrator
+check. The schedule family has its own registration in `core/schedule` (it
+needs the runner) — see [Scheduled tasks](scheduled-tasks.md) — and the
+subagent family in `core/subagent` (it needs the agent) — see
 [Subagents](subagents.md). Credential tools
 join the shell family automatically when a credential store is configured:
 `RegisterBuiltins` fills `SandboxConfig.Credentials` from the provider's
@@ -67,8 +80,12 @@ compose as an AND:
 provider.Register(myTool, nil) // nil offers: every scenario decides alone
 ```
 
-`agent.ScheduledTaskScenario` excludes the three schedule tools by name so
-a firing cannot schedule more work; `agent.ChatScenario` offers everything.
+`agent.ScheduledTaskScenario` excludes the tools that create or manage other
+tasks, while allowing the two self-control tools for its current firing.
+`agent.SubagentScenario` excludes subagent and all schedule tools. Event
+triage additionally excludes administrator knowledge and playbook mutation
+tools. `agent.ChatScenario` omits self-control tools because it is not a task
+firing.
 
 ## Adding your own
 
