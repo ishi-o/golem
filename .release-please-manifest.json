@@ -1,14 +1,14 @@
 {
-  "core": "1.0.0",
-  "store/sqlx": "1.0.0",
-  "store/mongodb": "1.0.0",
-  "store/redis": "1.0.0",
-  "sandbox/docker": "1.0.0",
-  "sandbox/kubernetes": "1.0.0",
-  "connector/feishu": "1.0.0",
-  "connector/email": "0.3.0",
-  "connector/webhook": "0.3.0",
-  "connector/github": "0.3.0",
-  "connector/gitlab": "0.3.0",
-  "connector/grafana": "0.3.0"
+  "core": "1.1.0",
+  "store/sqlx": "1.1.0",
+  "store/mongodb": "1.1.0",
+  "store/redis": "1.1.0",
+  "sandbox/docker": "1.1.0",
+  "sandbox/kubernetes": "1.1.0",
+  "connector/feishu": "1.1.0",
+  "connector/email": "0.4.0",
+  "connector/webhook": "0.4.0",
+  "connector/github": "0.4.0",
+  "connector/gitlab": "0.4.0",
+  "connector/grafana": "0.4.0"
 }

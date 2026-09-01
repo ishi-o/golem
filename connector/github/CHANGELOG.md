@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ishi-o/golem/compare/connector/github/v0.3.0...connector/github/v0.4.0) (2026-09-01)
+
+
+### Features
+
+* **deps:** bump core into v1.0.0 ([3ce47da](https://github.com/ishi-o/golem/commit/3ce47dae099f9062994eac7a89e1fbbbfc5b69fb))
+
 ## [0.3.0](https://github.com/ishi-o/golem/compare/connector/github/v0.2.1...connector/github/v0.3.0) (2026-09-01)
 
 
