@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/ishi-o/golem/compare/core/v1.0.0...core/v1.1.0) (2026-09-01)
+
+
+### Features
+
+* **deps:** bump core into v1.0.0 ([3ce47da](https://github.com/ishi-o/golem/commit/3ce47dae099f9062994eac7a89e1fbbbfc5b69fb))
+
 ## [1.0.0](https://github.com/ishi-o/golem/compare/core/v0.2.1...core/v1.0.0) (2026-09-01)
 
 
@@ -19,4 +26,3 @@
 ### Bug Fixes
 
 * **core:** drop inflated indirect requires, restore go 1.18 ([8be4285](https://github.com/ishi-o/golem/commit/8be4285d3695764205d9fe72a8736cf64e4dd776))
-

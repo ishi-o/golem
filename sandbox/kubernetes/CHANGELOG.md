@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/ishi-o/golem/compare/sandbox/kubernetes/v1.0.0...sandbox/kubernetes/v1.1.0) (2026-09-01)
+
+
+### Features
+
+* **deps:** bump core into v1.0.0 ([3ce47da](https://github.com/ishi-o/golem/commit/3ce47dae099f9062994eac7a89e1fbbbfc5b69fb))
+
 ## [1.0.0](https://github.com/ishi-o/golem/compare/sandbox/kubernetes/v0.2.1...sandbox/kubernetes/v1.0.0) (2026-09-01)
 
 
@@ -17,4 +24,3 @@
 ### Bug Fixes
 
 * cap lib modules at go 1.23, pin siblings at v0.1.0 ([2d22b55](https://github.com/ishi-o/golem/commit/2d22b559dcad65302645ec3de88127ea2a24bd63))
-
