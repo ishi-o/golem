@@ -85,7 +85,6 @@ type Tools struct {
 	AskUserQuestion AskUserQuestion
 	PublishFile     PublishFile
 	MCP             MCP
-	ToolSearch      ToolSearch
 	Subagent        Subagent
 }
 
@@ -110,15 +109,6 @@ type MCP struct {
 	// over plain http, and to resolve to addresses the guard would otherwise
 	// reject (a local monitoring stack, say).
 	TrustedHosts []string
-}
-
-// ToolSearch configures the tool-search index. MaxResults bounds how many
-// tools one search materializes; EnableThreshold is the MCP tool count above
-// which a run hides its tools behind the search tool instead of sending every
-// definition to the model on every call.
-type ToolSearch struct {
-	MaxResults      int
-	EnableThreshold int
 }
 
 // Subagent configures the subagent tools (core/subagent). MaxConcurrent
@@ -152,12 +142,6 @@ func (c *Config) Normalize() error {
 	if c.AI.Tools.AskUserQuestion.TTL <= 0 {
 		// 24h, Feishu's own card life being the practical ceiling anyway.
 		c.AI.Tools.AskUserQuestion.TTL = 24 * time.Hour
-	}
-	if c.AI.Tools.ToolSearch.MaxResults <= 0 {
-		c.AI.Tools.ToolSearch.MaxResults = 5
-	}
-	if c.AI.Tools.ToolSearch.EnableThreshold <= 0 {
-		c.AI.Tools.ToolSearch.EnableThreshold = 20
 	}
 	if c.AI.Tools.Subagent.MaxConcurrent <= 0 {
 		c.AI.Tools.Subagent.MaxConcurrent = 10

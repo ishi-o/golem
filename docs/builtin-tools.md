@@ -9,6 +9,11 @@ type Builtin interface {
 }
 ```
 
+`tools.Provider.Compose` gives these Eino tools to `compose.ToolsNode` for
+dispatch and standard `schema.ToolMessage` construction. The node is
+configured for sequential execution; provider middleware supplies golem's
+argument rewriting, large-result handling, and model-visible tool errors.
+
 One type per family — single-tool families included — so registration and
 composition treat them all the same way.
 

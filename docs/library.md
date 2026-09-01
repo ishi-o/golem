@@ -88,6 +88,12 @@ provider := tools.NewProvider(cfg, workspaces, backend, nil, // nil MCPBuilder
     tools.WithLogger(logger))
 ```
 
+Each run is backed by Eino's `compose.ToolsNode`. The provider passes the
+original Eino tools to that node and installs golem's cross-cutting policies
+as Eino tool middleware. Calls stay sequential because built-in tools can
+write shared state; the agent's queueing, cancellation, and turn-ending
+rules remain outside the node.
+
 The process-wide families are registered in one explicit call. Sandbox
 tools need a backend from [sandbox/](../sandbox); scheduled tasks need an
 injected [Scheduler](scheduled-tasks.md):

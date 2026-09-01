@@ -71,8 +71,6 @@ const (
 	ToolNameStartSubagent  = "StartSubagent"
 	ToolNameWaitSubagent   = "WaitForSubagent"
 	ToolNameCancelSubagent = "CancelSubagent"
-
-	ToolNameToolSearch = "tool_search"
 )
 
 // MustTool builds a tool whose schema is inferred from a static Go struct —

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -43,23 +44,89 @@ func (f InterceptorFuncs) AfterCall(ctx context.Context, name, arguments, result
 	return f.After(ctx, name, arguments, result)
 }
 
-// intercepted wraps an InvokableTool with the interceptor chain. It
-// forwards Info untouched — the metadata the model sees must be the wrapped
-// tool's own, or a tool whose result ends the turn would silently become one
-// whose result does not.
+// interceptorMiddleware adapts golem's interceptor contract to Eino's tool
+// middleware. The provider uses this path so ToolsNode owns tool dispatch and
+// message construction while golem keeps its argument-rewrite and end-turn
+// policies.
+func interceptorMiddleware(interceptors []Interceptor) compose.ToolMiddleware {
+	return interceptorMiddlewareWithErrors(interceptors, true)
+}
+
+func interceptorMiddlewareWithErrors(interceptors []Interceptor, recoverErrors bool) compose.ToolMiddleware {
+	return compose.ToolMiddleware{
+		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
+			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+				arguments := input.Arguments
+				for _, interceptor := range interceptors {
+					var err error
+					arguments, err = interceptor.BeforeCall(ctx, input.Name, arguments)
+					if err != nil {
+						return finishToolCall(ctx, recoverErrors, fmt.Errorf("interceptor before %s: %w", input.Name, err))
+					}
+				}
+
+				call := *input
+				call.Arguments = arguments
+				output, err := next(ctx, &call)
+				if err != nil {
+					return finishToolCall(ctx, recoverErrors, err)
+				}
+				if output == nil {
+					return finishToolCall(ctx, recoverErrors, fmt.Errorf("tool %s returned nil output", input.Name))
+				}
+
+				result := output.Result
+				endTurn := false
+				for j := len(interceptors) - 1; j >= 0; j-- {
+					var stop bool
+					result, stop, err = interceptors[j].AfterCall(ctx, input.Name, arguments, result)
+					if err != nil {
+						return finishToolCall(ctx, recoverErrors, fmt.Errorf("interceptor after %s: %w", input.Name, err))
+					}
+					endTurn = endTurn || stop
+				}
+				if endTurn {
+					result = endTurnPrefix + result
+				}
+				return &compose.ToolOutput{Result: result}, nil
+			}
+		},
+	}
+}
+
+func finishToolCall(ctx context.Context, recoverErrors bool, err error) (*compose.ToolOutput, error) {
+	if !recoverErrors || ctx.Err() != nil {
+		return nil, err
+	}
+	return &compose.ToolOutput{Result: fmt.Sprintf("tool error: %v", err)}, nil
+}
+
+// intercepted is the compatibility adapter returned by WrapTool. Provider
+// runs use interceptorMiddleware directly; keeping this small adapter avoids
+// breaking callers that used WrapTool outside a Provider.
 type intercepted struct {
-	delegate     tool.InvokableTool
-	interceptors []Interceptor
+	delegate tool.InvokableTool
+	endpoint compose.InvokableToolEndpoint
 }
 
 // WrapTool applies interceptors to a tool. Order matters and is documented:
 // BeforeCall runs outermost-first, AfterCall innermost-first, so an
 // interceptor sees the result in the order it saw the arguments.
+//
+// Deprecated: register the interceptor with NewProvider instead. Provider
+// composition uses Eino's compose.ToolsNode middleware directly.
 func WrapTool(t tool.InvokableTool, interceptors ...Interceptor) tool.InvokableTool {
 	if len(interceptors) == 0 {
 		return t
 	}
-	return &intercepted{delegate: t, interceptors: interceptors}
+	endpoint := interceptorMiddlewareWithErrors(interceptors, false).Invokable(func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+		result, err := t.InvokableRun(ctx, input.Arguments, input.CallOptions...)
+		if err != nil {
+			return nil, err
+		}
+		return &compose.ToolOutput{Result: result}, nil
+	})
+	return &intercepted{delegate: t, endpoint: endpoint}
 }
 
 func (w *intercepted) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -67,36 +134,18 @@ func (w *intercepted) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (w *intercepted) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	args := argumentsInJSON
-	for _, i := range w.interceptors {
-		var err error
-		args, err = i.BeforeCall(ctx, toolName(ctx, w), args)
-		if err != nil {
-			return "", fmt.Errorf("interceptor before %s: %w", toolName(ctx, w), err)
-		}
-	}
-	result, err := w.delegate.InvokableRun(ctx, args, opts...)
+	output, err := w.endpoint(ctx, &compose.ToolInput{
+		Name:        toolName(ctx, w),
+		Arguments:   argumentsInJSON,
+		CallOptions: opts,
+	})
 	if err != nil {
 		return "", err
 	}
-	endTurn := false
-	for j := len(w.interceptors) - 1; j >= 0; j-- {
-		var stop bool
-		var ierr error
-		result, stop, ierr = w.interceptors[j].AfterCall(ctx, toolName(ctx, w), args, result)
-		if ierr != nil {
-			return "", fmt.Errorf("interceptor after %s: %w", toolName(ctx, w), ierr)
-		}
-		endTurn = endTurn || stop
+	if output == nil {
+		return "", fmt.Errorf("tool %s returned nil output", toolName(ctx, w))
 	}
-	if endTurn {
-		// The sentinel is private to this package; the agent's tool executor
-		// unwraps it. Travelling inside the result string (rather than a
-		// second return value) keeps the wrapped tool's signature the
-		// framework's own.
-		return endTurnPrefix + result, nil
-	}
-	return result, nil
+	return output.Result, nil
 }
 
 // endTurnPrefix marks a tool result whose run should stop after this call.
@@ -120,9 +169,7 @@ func SplitEndTurn(result string) (string, bool) {
 	return result, false
 }
 
-// toolName resolves the wrapped tool's name for log and error messages. The
-// Info call is cheap (the built-ins return a stored value) and keeps the
-// wrapper honest about what it is delegating to.
+// toolName resolves the wrapped tool's name for compatibility calls.
 func toolName(ctx context.Context, w *intercepted) string {
 	info, err := w.delegate.Info(ctx)
 	if err != nil || info == nil {

@@ -534,7 +534,7 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 
 	state.notifyAll("OnSubscribe", func(l ResponseListener) { l.OnSubscribe() })
 
-	messages, err := a.buildMessages(runCtx, req, composition)
+	messages, err := a.buildMessages(runCtx, req)
 	if err != nil {
 		finish(OutcomeFailed, err)
 		return
@@ -668,26 +668,20 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 		if len(assistant.ToolCalls) == 0 {
 			break
 		}
-		// Execute the tool calls, append their results, loop. A tool error
-		// is a tool result the model reads, not a run failure — the model
-		// gets to correct itself.
-		ended := false
-		for _, call := range assistant.ToolCalls {
-			result, endTurn, err := a.executeTool(runCtx, composition, call)
-			if err != nil {
-				if runCtx.Err() != nil {
-					finish(OutcomeCancelled, nil)
-					return
-				}
-				result, endTurn = fmt.Sprintf("tool error: %v", err), false
+		// Eino owns tool dispatch and tool-message construction. A tool error
+		// is converted to a tool result by the provider middleware so the
+		// model can correct itself rather than the run failing.
+		toolMessages, ended, err := composition.Invoke(runCtx, assistant)
+		if err != nil {
+			if runCtx.Err() != nil {
+				finish(OutcomeCancelled, nil)
+				return
 			}
-			toolMsg := &schema.Message{Role: schema.Tool, ToolCallID: call.ID, ToolName: call.Function.Name, Content: result}
-			messages = append(messages, toolMsg)
-			newMessages = append(newMessages, toolMsg)
-			if endTurn {
-				ended = true
-			}
+			finish(OutcomeFailed, fmt.Errorf("executing tools: %w", err))
+			return
 		}
+		messages = append(messages, toolMessages...)
+		newMessages = append(newMessages, toolMessages...)
 		if ended {
 			// A turn-ending tool (the ask, with answers arriving later):
 			// the result is for the application and the next run, not for
@@ -717,29 +711,8 @@ func (a *Agent) run(req Request, ready chan<- struct{}) {
 	finish(OutcomeCompleted, nil)
 }
 
-// executeTool dispatches one tool call through the composition's wrapped
-// tools, unwrapping the end-turn sentinel (see interceptor.go).
-func (a *Agent) executeTool(ctx context.Context, comp *tools.Composition, call schema.ToolCall) (string, bool, error) {
-	for _, t := range comp.Tools {
-		info, err := t.Info(ctx)
-		if err != nil || info == nil || info.Name != call.Function.Name {
-			continue
-		}
-		result, err := t.InvokableRun(ctx, call.Function.Arguments)
-		if err != nil {
-			return "", false, err
-		}
-		result, end := tools.SplitEndTurn(result)
-		return result, end, nil
-	}
-	// An unroutable tool call is a recovery instruction, not a failure: the
-	// model hallucinating a tool it was not offered is a normal outcome of
-	// an index-based tool set.
-	return fmt.Sprintf("no tool named %q is available in this run; say so and continue without it", call.Function.Name), false, nil
-}
-
 // buildMessages renders the system prompt and loads history.
-func (a *Agent) buildMessages(ctx context.Context, req Request, comp *tools.Composition) ([]*schema.Message, error) {
+func (a *Agent) buildMessages(ctx context.Context, req Request) ([]*schema.Message, error) {
 	vars := map[string]string{
 		"threadId": "",
 		"parentId": "",

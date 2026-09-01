@@ -32,7 +32,31 @@ first use. Identity keys: `UserID`, `ChatID`, `ChatType`, `RootMessageID`,
 by scenario (see [Built-in tools](builtin-tools.md#scenario-filtering)).
 
 A custom tool can also intercept results — `tools.Interceptor` wraps every
-tool the run offers; the large-response interceptor core installs is one.
+tool the run offers. The provider adapts this hook to Eino tool middleware;
+the large-response interceptor core installs is one. Register the interceptor
+with `tools.WithInterceptor` on the provider rather than wrapping a tool in
+the agent.
+
+## Eino and Eino-ext adapters
+
+`core` intentionally depends on Eino's stable interfaces, not on a model
+vendor or a network client. Use [Eino-ext](https://github.com/cloudwego/eino-ext)
+in the application or an optional integration module for implementations such
+as:
+
+- `components/model/openai` for OpenAI-compatible chat models;
+- `components/tool/mcp` for MCP clients;
+- provider-specific loaders, embedders, retrievers, and vector stores.
+
+Pass the resulting Eino `model.ToolCallingChatModel` to `agent.New`, and return
+Eino `tool.InvokableTool` values from the provider's `MCPBuilder`. This keeps
+the facade in `core` small and lets an integration choose its own credentials,
+transport, and lifecycle.
+
+Core does not include a tool-search index or a model-provider registry. A
+large tool catalog can be selected in the integration layer and exposed
+through `MCPBuilder` or `Provider.Register`, using the Eino/Eino-ext component
+that matches the deployment.
 
 ## MCP servers
 
@@ -59,8 +83,6 @@ provider := golemtools.NewProvider(cfg, workspaces, backend, mcpBuilder{
 
 Connections are built per run (MCP handshakes are blocking network work) and
 closed when the run ends; a failing server costs its tools, never the run.
-`core/toolsearch` (an index over tool descriptions for large tool sets) is
-not yet wired to any shipped surface.
 
 ## Todo handlers
 
