@@ -2,10 +2,8 @@ module github.com/ishi-o/golem/sandbox/kubernetes
 
 go 1.24.0
 
-replace github.com/ishi-o/golem/core => ../../core
-
 require (
-	github.com/ishi-o/golem/core v0.0.0-00010101000000-000000000000
+	github.com/ishi-o/golem/core v1.0.0
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1

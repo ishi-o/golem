@@ -15,11 +15,3 @@ use (
 	./store/sqlx
 	./test
 )
-
-replace (
-	github.com/ishi-o/golem/connector/email v0.2.1 => ./connector/email
-	github.com/ishi-o/golem/connector/github v0.2.1 => ./connector/github
-	github.com/ishi-o/golem/connector/gitlab v0.2.1 => ./connector/gitlab
-	github.com/ishi-o/golem/connector/grafana v0.2.1 => ./connector/grafana
-	github.com/ishi-o/golem/connector/webhook v0.2.1 => ./connector/webhook
-)

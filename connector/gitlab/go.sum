@@ -1,0 +1,4 @@
+github.com/ishi-o/golem/connector/webhook v0.3.0 h1:wxwP9/d8bU/KTTWGn+2yyHdqNUFUXJ4FdRr/sqLgXks=
+github.com/ishi-o/golem/connector/webhook v0.3.0/go.mod h1:UTv7n4ZmeSCrTC5lyMqOwGSp8vXa2f/lDbtGXsFKzCY=
+github.com/ishi-o/golem/core v1.0.0 h1:MAOENE5qbhs7rJnnmDiJCFN0wIxp9/rQekZq+pNk1rg=
+github.com/ishi-o/golem/core v1.0.0/go.mod h1:z9Wo9KuD9oQsSlQjUY0J8jvKp0mSx+g8oi3bgvnvxfo=
