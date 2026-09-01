@@ -118,6 +118,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}{{"owner_name_unique", bson.D{{Key: "owner_id", Value: 1}, {Key: "name", Value: 1}}, true}}); err != nil {
 		return err
 	}
+	if err := createIndexes(ctx, s.collection("observed_events"), []struct {
+		name   string
+		keys   bson.D
+		unique bool
+	}{{"situation", bson.D{{Key: "situation_id", Value: 1}}, false}}); err != nil {
+		return err
+	}
+	if err := createIndexes(ctx, s.collection("situations"), []struct {
+		name   string
+		keys   bson.D
+		unique bool
+	}{{"correlation_status", bson.D{{Key: "correlation_key", Value: 1}, {Key: "status", Value: 1}}, false}, {"source_correlation_status", bson.D{{Key: "source", Value: 1}, {Key: "correlation_key", Value: 1}, {Key: "status", Value: 1}}, false}, {"status", bson.D{{Key: "status", Value: 1}}, false}, {"phase", bson.D{{Key: "phase", Value: 1}}, false}}); err != nil {
+		return err
+	}
 	return nil
 }
 
