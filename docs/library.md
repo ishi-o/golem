@@ -126,21 +126,19 @@ subagent.Register(provider, agent, cfg, nil, logger)
 
 ## Knowledge and external events
 
-Knowledge is an optional facade backed by an Eino-native implementation. The
-reference in-memory implementation is useful for tests and small processes;
-production applications can implement `knowledge.KnowledgeBase` in another
-module without changing the agent:
+Knowledge is a facade with no bundled implementation. `core/knowledge`
+contains no vector database, in-memory backend, or Milvus adapter. Eino
+supplies the `retriever.Retriever` and `indexer.Indexer` contracts, while
+eino-ext supplies Milvus implementations such as
+`components/retriever/milvus2` and `components/indexer/milvus2`, plus the
+embedder selected by the application.
 
-```go
-base := knowledge.NewInMemory(knowledge.InMemoryOptions{})
-a := agent.New(chatModel, backend, provider, cfg,
-    agent.WithBackend(backend),
-    agent.WithKnowledgeBase(base, knowledge.RetrievalConfig{TopK: 4, MaxChars: 12000}),
-)
-for _, t := range knowledge.NewTools(base, workspaces.ForOwner("admin")).List() {
-    provider.Register(t, nil)
-}
-```
+Install and construct those Eino-ext components in the downstream
+application. If the application only needs retrieval in its own Eino graph,
+use the Eino-ext retriever directly. If it wants golem's scoped knowledge
+tools, it must provide its own `knowledge.KnowledgeBase` implementation over
+the chosen indexer/retriever; that adapter is intentionally not part of this
+repository.
 
 The agent retrieves scoped knowledge before ordinary model turns and frames
 the passages as untrusted reference data. Explicit `KnowledgeRetrieval`
@@ -152,6 +150,9 @@ deduplicates, correlates, and stores bounded evidence; the sweeper performs
 the model call later:
 
 ```go
+// base is an application-owned knowledge.KnowledgeBase, or omit the
+// knowledge/playbook tools when the application does not expose them.
+base := yourKnowledgeBase
 eventCfg := events.Config{Enabled: true, Sources: map[string]events.SourceConfig{
     "monitor": {
         Owner: events.Owner{UserID: "triage-owner"},
@@ -174,6 +175,51 @@ playbook tools are administrator-only and write documents to the configured
 owner's personal knowledge scope. `events.TriageScenario` is memoryless and
 does not receive scheduling, subagent, administrator-knowledge, or playbook
 mutation tools.
+
+The optional webhook and email modules are connector facades, not part of
+`core`:
+
+```sh
+go get github.com/ishi-o/golem/connector/grafana
+go get github.com/ishi-o/golem/connector/github
+go get github.com/ishi-o/golem/connector/gitlab
+go get github.com/ishi-o/golem/connector/email
+```
+
+Mount each handler at the route configured in the vendor and pass the same
+`events.Intake` to it:
+
+```go
+http.Handle("/webhooks/grafana", grafana.NewHandler(intake, grafanaSecret))
+http.Handle("/webhooks/github", github.NewHandler(intake, githubSecret))
+http.Handle("/webhooks/gitlab", gitlab.NewHandler(intake, gitlabToken))
+```
+
+GitHub uses `X-Hub-Signature-256`; GitLab uses `X-Gitlab-Token`; Grafana uses
+the bearer or basic credential configured on its contact point. GitLab and
+Grafana do not sign the body, so terminate HTTPS before these handlers. The
+handlers bound raw request bodies, acknowledge ignored/test deliveries with
+`204`, and return `500` when the intake fails so a vendor can retry. Email is
+also represented as a transport-neutral facade:
+
+```go
+import "github.com/ishi-o/golem/connector/email"
+
+source := email.NewSource()
+receiver.Receive(ctx, func(ctx context.Context, message email.Message) error {
+    observation, err := source.Observe(message)
+    if err != nil {
+        return err
+    }
+    return intake.Observe(observation)
+})
+```
+
+The downstream receiver supplies a stable `DeliveryID` (for example an IMAP
+UID plus UIDVALIDITY), parses MIME, and computes `ThreadID` from mail thread
+headers. It sets `AuthenticatedFrom` only after a trusted gateway or verifier
+has authenticated the sender. This repository provides no IMAP/POP3/SMTP
+implementation. Slack likewise remains a downstream transport integration.
 
 Your own tools register individually — see
 [Extending](extending.md). The full family inventory is in

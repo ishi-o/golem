@@ -87,6 +87,20 @@ Eino `tool.InvokableTool` values from the provider's `MCPBuilder`. This keeps
 the facade in `core` small and lets an integration choose its own credentials,
 transport, and lifecycle.
 
+Eino already provides the native component seams used by core: chat-model,
+retriever, tool, `compose.ToolsNode`, `compose.ToolMiddleware`, and callback
+handler interfaces. Eino-ext provides concrete model implementations such as
+`components/model/openai`, MCP tools, embeddings, retrievers/vector stores,
+and callback handlers. Do not add those providers to core. In particular,
+`model/openai` is an eino-ext package, not a golem package.
+
+The `knowledge.KnowledgeBase` facade intentionally remains slightly wider than
+Eino's `retriever.Retriever`: it also needs scoped index/list/delete/move. No
+knowledge implementation or Milvus adapter is shipped here. If an
+application wants golem's knowledge tools, it owns the adapter around its
+eino-ext indexer/retriever and exposes the search half through
+`knowledge.NewRetriever`.
+
 Core does not include a tool-search index or a model-provider registry. A
 large tool catalog can be selected in the integration layer and exposed
 through `MCPBuilder` or `Provider.Register`, using the Eino/Eino-ext component
@@ -150,6 +164,17 @@ message → `agent.Fire` with identity and conversation ids → stream
 `OnContent` to the surface → deliver answers to outstanding asks. The
 repository's `connector/feishu` (Feishu/Lark: message events, cards,
 replies, duplicate-message protection) is the reference implementation.
+
+For external events, `connector/webhook` supplies the HTTP facade and
+`connector/github`, `connector/gitlab`, and `connector/grafana` supply the
+vendor authentication and payload adapters. They produce
+`observing.Observation` values and never call a model or choose persistence.
+Mount them on the application's HTTP server and pass `events.Intake` to their
+`NewHandler` function. Slack and email need a Slack client/socket transport or
+an IMAP/MIME client; those are not supplied by Eino/eino-ext. The
+`connector/email` facade defines the transport-neutral `Message`, `Receiver`,
+and `Source` seams; a downstream receiver supplies the protocol client and
+passes messages through `Source.Observe` before calling the event intake.
 
 ## Sandboxes and stores
 

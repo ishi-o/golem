@@ -2,9 +2,10 @@
 
 `core/schedule` persists the user's scheduled tasks, reloads the ACTIVE
 ones at startup, and fires them at the agent in the creating conversation.
-It ships no scheduler on purpose: **you inject one**, wrapping your
-scheduler library in a three-method interface. The injected scheduler is
-also the sole validator of cron expressions — golem parses nothing.
+It is a facade over scheduling, not a scheduler implementation: **you inject
+one**, wrapping your scheduler library in a three-method interface. The
+injected scheduler is also the sole validator of cron expressions — golem
+parses nothing.
 
 ## The seam
 
