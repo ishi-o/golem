@@ -17,7 +17,7 @@ import (
 // it to add its own rules rather than to restate these.
 
 // DefaultGuideThreshold is the tool-result size above which the large
-// response interceptor diverts the result to a file in the user's workspace.
+// response middleware diverts the result to a file in the user's workspace.
 // 30000 characters is roughly where a tool result starts crowding the context
 // window more than it earns.
 const DefaultGuideThreshold = 30000
@@ -64,7 +64,7 @@ type AI struct {
 	// surfaces render.
 	ModelPricing map[string]ModelPricing
 
-	// GuideThreshold is the tool-result size the large response interceptor
+	// GuideThreshold is the tool-result size the large response middleware
 	// diverts at; 0 means DefaultGuideThreshold.
 	GuideThreshold int
 

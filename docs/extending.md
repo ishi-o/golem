@@ -31,11 +31,45 @@ first use. Identity keys: `UserID`, `ChatID`, `ChatType`, `RootMessageID`,
 `ReplyMessageID`. The second `Register` argument optionally gates the tool
 by scenario (see [Built-in tools](builtin-tools.md#scenario-filtering)).
 
-A custom tool can also intercept results — `tools.Interceptor` wraps every
-tool the run offers. The provider adapts this hook to Eino tool middleware;
-the large-response interceptor core installs is one. Register the interceptor
-with `tools.WithInterceptor` on the provider rather than wrapping a tool in
-the agent.
+For a quick before/after hook, use the convenience interceptor facade:
+
+```go
+provider := tools.NewProvider(cfg, workspaces, backend, nil,
+    tools.WithInterceptor(tools.InterceptorFuncs{
+        Before: func(ctx context.Context, name, arguments string) (string, error) {
+            return rewrite(name, arguments), nil
+        },
+        After: func(ctx context.Context, name, arguments, result string) (string, bool, error) {
+            return annotate(name, result), false, nil
+        },
+    }))
+```
+
+`WithInterceptor` is a thin adapter to Eino middleware. For the full native
+Eino hook surface, register `compose.ToolMiddleware` with
+`tools.WithToolMiddleware`; it receives the same `compose.ToolInput` and
+endpoint that Eino uses, so it can rewrite arguments before calling `next` and
+transform the returned `ToolOutput`:
+
+```go
+provider := tools.NewProvider(cfg, workspaces, backend, nil,
+    tools.WithToolMiddleware(compose.ToolMiddleware{
+        Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
+            return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+                output, err := next(ctx, input)
+                if err != nil {
+                    return nil, err
+                }
+                output.Result = "annotated: " + output.Result
+                return output, nil
+            }
+        },
+    }))
+```
+
+Use `tools.EndTurnResult(result)` when middleware or a tool must end the run
+after returning its result. The provider's built-in middleware handles large
+results and converts ordinary tool errors into model-visible tool messages.
 
 ## Eino and Eino-ext adapters
 

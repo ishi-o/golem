@@ -64,5 +64,5 @@ Work through the task, then answer with what the brief asked you to report and n
 {taskText}`
 
 // DefaultGuideThreshold is the tool-result size above which the large
-// response interceptor diverts the result to a file in the user's workspace.
+// response middleware diverts the result to a file in the user's workspace.
 // 30000 characters is roughly where a tool result starts crowding the context

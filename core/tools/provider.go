@@ -34,10 +34,11 @@ type Provider struct {
 	repos store.Backend
 	// mcp builds the run's MCP tools, nil when the deployment has none.
 	mcp MCPBuilder
-	// interceptors are installed as Eino tool middleware; the large response
-	// interceptor is added by NewProvider from the config.
-	interceptors []Interceptor
-	log          *slog.Logger
+	// middlewares are installed directly on Eino's ToolsNode. Built-in
+	// middleware is added by NewProvider; callers can append their own with
+	// WithToolMiddleware.
+	middlewares []compose.ToolMiddleware
+	log         *slog.Logger
 
 	mu         sync.RWMutex
 	registered []registeredTool
@@ -77,16 +78,32 @@ func WithLogger(log *slog.Logger) ProviderOption {
 	}
 }
 
-// WithInterceptor adds an interceptor to the provider's tool chain.
-func WithInterceptor(interceptor Interceptor) ProviderOption {
+// WithToolMiddleware adds native Eino middleware to the provider's tool
+// chain. The middleware order is the order in which options are applied,
+// after golem's built-in middleware.
+func WithToolMiddleware(middleware compose.ToolMiddleware) ProviderOption {
 	return func(p *Provider) {
-		if interceptor != nil {
-			p.interceptors = append(p.interceptors, interceptor)
+		if middleware.Invokable != nil ||
+			middleware.Streamable != nil ||
+			middleware.EnhancedInvokable != nil ||
+			middleware.EnhancedStreamable != nil {
+			p.middlewares = append(p.middlewares, middleware)
 		}
 	}
 }
 
-// NewProvider constructs the provider and adds the built-in interceptor.
+// WithInterceptor adds the convenient before/after interceptor facade to the
+// provider's Eino tool chain. Use WithToolMiddleware when the native Eino
+// middleware hooks or streamable/enhanced tools are needed.
+func WithInterceptor(interceptor Interceptor) ProviderOption {
+	return func(p *Provider) {
+		if interceptor != nil {
+			p.middlewares = append(p.middlewares, interceptorMiddleware(interceptor))
+		}
+	}
+}
+
+// NewProvider constructs the provider and adds the built-in tool middleware.
 func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos store.Backend, mcp MCPBuilder, options ...ProviderOption) *Provider {
 	_ = cfg.Normalize()
 	if workspaces == nil {
@@ -98,11 +115,12 @@ func NewProvider(cfg config.Config, workspaces *storage.WorkspaceFactory, repos 
 		repos:      repos,
 		mcp:        mcp,
 		log:        slog.Default(),
-		interceptors: []Interceptor{
-			&LargeResponseInterceptor{
+		middlewares: []compose.ToolMiddleware{
+			toolErrorMiddleware(),
+			NewLargeResponseMiddleware(LargeResponseMiddlewareConfig{
 				GuideThreshold: cfg.AI.GuideThreshold,
 				Workspaces:     workspaces,
-			},
+			}),
 		},
 	}
 	for _, option := range options {
@@ -312,9 +330,8 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 		}
 	}
 
-	// Keep the wrapped values in Composition.Tools for callers that use the
-	// compatibility field directly. Agent runs dispatch the original values
-	// through Eino's middleware below, so the chain is applied exactly once.
+	// Keep the original Eino values in Composition.Tools. The ToolsNode owns
+	// dispatch and applies the middleware chain exactly once.
 	comp.Tools = make([]tool.InvokableTool, 0, len(tools))
 	comp.Info = make([]*schema.ToolInfo, 0, len(tools))
 	baseTools := make([]tool.BaseTool, 0, len(tools))
@@ -331,7 +348,7 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 			comp.Close()
 			return nil, fmt.Errorf("tool info: tool at index %d returned nil metadata", len(baseTools))
 		}
-		comp.Tools = append(comp.Tools, WrapTool(t, p.interceptors...))
+		comp.Tools = append(comp.Tools, t)
 		comp.Info = append(comp.Info, info)
 		baseTools = append(baseTools, t)
 	}
@@ -340,7 +357,7 @@ func (p *Provider) Compose(ctx context.Context, req ComposeRequest) (*Compositio
 		Tools:               baseTools,
 		ExecuteSequentially: true,
 		UnknownToolsHandler: unknownTool,
-		ToolCallMiddlewares: []compose.ToolMiddleware{interceptorMiddleware(p.interceptors)},
+		ToolCallMiddlewares: p.middlewares,
 	})
 	if err != nil {
 		comp.Close()

@@ -1,6 +1,6 @@
 // Package tools is the tool subsystem: the per-request context values tools
-// read, the interceptor chain, the composition that assembles a run's tool
-// set, and the built-in tools.
+// read, the middleware chain, the composition that assembles a run's tool set,
+// and the built-in tools.
 //
 // Eino tools receive a plain context.Context, so the runtime carries identity
 // as typed context values, assembled once by the agent before the run starts.
