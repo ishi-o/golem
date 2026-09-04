@@ -3,7 +3,7 @@ module github.com/ishi-o/golem/store/redis
 go 1.24.0
 
 require (
-	github.com/cloudwego/eino v0.9.17
+	github.com/cloudwego/eino v0.9.18
 	github.com/ishi-o/golem/core v1.0.0
 	github.com/redis/go-redis/v9 v9.7.3
 )
