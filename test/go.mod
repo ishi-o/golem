@@ -3,7 +3,7 @@ module github.com/ishi-o/golem/test
 go 1.24.0
 
 require (
-	github.com/cloudwego/eino v0.9.17
+	github.com/cloudwego/eino v0.9.18
 	github.com/ishi-o/golem/connector/email v0.3.0
 	github.com/ishi-o/golem/connector/feishu v1.0.0
 	github.com/ishi-o/golem/connector/github v0.3.0
