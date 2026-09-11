@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/ishi-o/golem/core v1.0.0
-	github.com/moby/moby/api v1.55.0
+	github.com/moby/moby/api v1.56.0
 	github.com/moby/moby/client v0.5.1
 )
 
