@@ -16,7 +16,7 @@ require (
 	github.com/ishi-o/golem/store/redis v1.0.0
 	github.com/ishi-o/golem/store/sqlx v1.0.0
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.4.0
