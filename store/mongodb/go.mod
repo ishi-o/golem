@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/cloudwego/eino v0.9.17
-	go.mongodb.org/mongo-driver v1.17.9
+	go.mongodb.org/mongo-driver v1.17.10
 )
 
 require github.com/ishi-o/golem/core v1.0.0
