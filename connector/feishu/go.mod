@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/ishi-o/golem/core v1.0.0
-	github.com/larksuite/oapi-sdk-go/v3 v3.11.0
+	github.com/larksuite/oapi-sdk-go/v3 v3.12.0
 )
 
 require (
